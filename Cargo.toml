@@ -49,6 +49,7 @@ indexmap = [
     "dep:indexmap",
     "alloc",
     "schemars?/indexmap2",
+    "serde_with?/indexmap_2",
 ]
 itertools = [
     "dep:itertools",
@@ -63,6 +64,7 @@ schemars = [
     "dep:schemars",
     "dep:serde_json",
     "alloc",
+    "serde_with?/schemars_1",
 ]
 serde = [
     "dep:serde",
@@ -70,6 +72,10 @@ serde = [
     "heapless?/serde",
     "indexmap?/serde",
     "smallvec?/serde",
+]
+serde_with = [
+    "dep:serde_with",
+    "serde",
 ]
 smallvec = [
     "dep:smallvec",
@@ -135,6 +141,11 @@ optional = true
 
 [dependencies.serde_json]
 version = "1.0"
+default-features = false
+optional = true
+
+[dependencies.serde_with]
+version = "3.20"
 default-features = false
 optional = true
 

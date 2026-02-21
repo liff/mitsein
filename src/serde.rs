@@ -3,6 +3,8 @@
 
 use core::fmt::Display;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+#[cfg(feature = "serde_with")]
+use serde_with::{DeserializeAs, SerializeAs, de::DeserializeAsWrap, ser::SerializeAsWrap};
 
 use crate::NonEmpty;
 
@@ -28,6 +30,25 @@ where
     }
 }
 
+#[cfg(feature = "serde_with")]
+impl<'de, T, U> DeserializeAs<'de, NonEmpty<T>> for NonEmpty<U>
+where
+    NonEmpty<T>: TryFrom<T>,
+    <NonEmpty<T> as TryFrom<T>>::Error: Display,
+    U: DeserializeAs<'de, T>,
+{
+    fn deserialize_as<D>(deserializer: D) -> Result<NonEmpty<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use ::serde::de::Error;
+
+        let items = DeserializeAsWrap::<T, U>::deserialize(deserializer)?.into_inner();
+
+        NonEmpty::try_from(items).map_err(D::Error::custom)
+    }
+}
+
 impl<T> Serialize for NonEmpty<T>
 where
     T: Serialize + ?Sized,
@@ -37,6 +58,19 @@ where
         S: Serializer,
     {
         self.items.serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde_with")]
+impl<T, U> SerializeAs<NonEmpty<T>> for NonEmpty<U>
+where
+    U: SerializeAs<T>,
+{
+    fn serialize_as<S>(source: &NonEmpty<T>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SerializeAsWrap::<T, U>::new(&source.items).serialize(serializer)
     }
 }
 

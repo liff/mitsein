@@ -28,6 +28,8 @@ use {
     alloc::borrow::Cow,
     schemars::{JsonSchema, Schema, SchemaGenerator},
 };
+#[cfg(all(feature = "schemars", feature = "serde_with"))]
+use serde_with::schemars_1::JsonSchemaAs;
 
 #[cfg(feature = "std")]
 use crate::array1::Array1;
@@ -1619,6 +1621,30 @@ where
 
     fn schema_id() -> Cow<'static, str> {
         IndexMap::<K, V, S>::schema_id()
+    }
+}
+
+#[cfg(all(feature = "schemars", feature = "serde_with"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "schemars", feature = "serde_with"))))]
+impl<K, KA, V, VA, S> JsonSchemaAs<IndexMap1<K, V, S>> for IndexMap1<KA, VA, S>
+where
+    KA: JsonSchemaAs<K>,
+    VA: JsonSchemaAs<V>,
+{
+    fn schema_name() -> Cow<'static, str> {
+        <IndexMap1<serde_with::Schema<K, KA>, serde_with::Schema<V, VA>, S> as JsonSchema>::schema_name()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        <IndexMap1<serde_with::Schema<K, KA>, serde_with::Schema<V, VA>, S> as JsonSchema>::json_schema(generator)
+    }
+
+    fn inline_schema() -> bool {
+        <IndexMap1<serde_with::Schema<K, KA>, serde_with::Schema<V, VA>, S> as JsonSchema>::inline_schema()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        <IndexMap1<serde_with::Schema<K, KA>, serde_with::Schema<V, VA>, S> as JsonSchema>::schema_id()
     }
 }
 
