@@ -24,76 +24,27 @@ use crate::cmp::{UnsafeOrd, UnsafeOrdIsomorph};
 use crate::iter1::{self, Extend1, FromIterator1, IntoIterator1, Iterator1};
 #[cfg(feature = "rayon")]
 use crate::iter1::{FromParallelIterator1, IntoParallelIterator1, ParallelIterator1};
+use crate::range1::IntoRangeBounds;
 use crate::safety::{NonZeroExt as _, OptionExt as _};
 use crate::subset::range::{
-    self, IntoRangeBounds, ItemRange, OptionExt as _, OutOfBoundsError, RangeError,
-    ResolveTrimRange, TrimRange, UnorderedError,
+    self, ItemRange, OptionExt as _, OutOfBoundsError, RangeError, ResolveTrimRange, TrimRange,
+    UnorderedError,
 };
-use crate::subset::{self, ByKey, ByRange, ByTail, KeyNotFoundError, SubsetFor};
+use crate::subset::{self, KeyNotFoundError};
 use crate::take;
 use crate::{EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
 
-type ItemFor<K> = <K as ClosedBTreeSet>::Item;
-
-pub trait ClosedBTreeSet {
+pub trait AsBTreeSet {
     type Item;
 
     fn as_btree_set(&self) -> &BTreeSet<Self::Item>;
 }
 
-impl<T> ClosedBTreeSet for BTreeSet<T> {
+impl<T> AsBTreeSet for BTreeSet<T> {
     type Item = T;
 
     fn as_btree_set(&self) -> &BTreeSet<Self::Item> {
         self
-    }
-}
-
-impl<T, Q> ByKey<Q> for BTreeSet<T>
-where
-    T: Borrow<Q> + Ord,
-    Q: Ord + ?Sized,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a Q,
-    ) -> Result<ExceptKeySubset<'a, Self, Q>, KeyNotFoundError<&'a Q>> {
-        self.contains(key)
-            .then_some(ExceptKeySubset::unchecked(self, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<T, R> ByRange<T, R> for BTreeSet<T>
-where
-    T: Ord,
-    R: IntoRangeBounds<T>,
-{
-    type Range = Option<ItemRange<T>>;
-    type Error = UnorderedError<Bound<T>>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self, Self::Range>, Self::Error> {
-        range::ordered_range_bounds(range)
-            .map(|range| {
-                let (start, end) = range.into_bounds();
-                OnlyRangeSubset::unchecked(self, Some(ItemRange::unchecked(start, end)))
-            })
-            .map_err(|range| {
-                let (start, end) = range.into_bounds();
-                UnorderedError(start, end)
-            })
-    }
-}
-
-impl<T> ByTail for BTreeSet<T> {
-    type Range = TrimRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(self, TrimRange::TAIL1)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(self, TrimRange::RTAIL1)
     }
 }
 
@@ -144,18 +95,13 @@ where
     }
 }
 
-impl<T> SubsetFor for BTreeSet<T> {
-    type Kind = Self;
-    type Target = Self;
-}
-
 type TakeIfMany<'a, T, U, N = ()> = take::TakeIfMany<'a, BTreeSet<T>, U, N>;
 
-pub type PopIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, ItemFor<K>>;
+pub type PopIfMany<'a, T> = TakeIfMany<'a, T, T>;
 
-pub type DropRemoveIfMany<'a, 'q, K, Q> = TakeIfMany<'a, ItemFor<K>, bool, &'q Q>;
+pub type DropRemoveIfMany<'a, 'q, T, Q> = TakeIfMany<'a, T, bool, &'q Q>;
 
-pub type TakeRemoveIfMany<'a, 'q, K, Q> = TakeIfMany<'a, ItemFor<K>, Option<ItemFor<K>>, &'q Q>;
+pub type TakeRemoveIfMany<'a, 'q, T, Q> = TakeIfMany<'a, T, Option<T>, &'q Q>;
 
 impl<'a, T, U, N> TakeIfMany<'a, T, U, N>
 where
@@ -307,7 +253,7 @@ impl<T> BTreeSet1<T> {
         self.items.replace(item)
     }
 
-    pub fn pop_first_if_many(&mut self) -> PopIfMany<'_, Self>
+    pub fn pop_first_if_many(&mut self) -> PopIfMany<'_, T>
     where
         T: Ord,
     {
@@ -324,7 +270,7 @@ impl<T> BTreeSet1<T> {
         PopFirstUntilOnly { items: self }
     }
 
-    pub fn pop_last_if_many(&mut self) -> PopIfMany<'_, Self>
+    pub fn pop_last_if_many(&mut self) -> PopIfMany<'_, T>
     where
         T: Ord,
     {
@@ -341,10 +287,7 @@ impl<T> BTreeSet1<T> {
         PopLastUntilOnly { items: self }
     }
 
-    pub fn remove_if_many<'a, 'q, Q>(
-        &'a mut self,
-        query: &'q Q,
-    ) -> DropRemoveIfMany<'a, 'q, Self, Q>
+    pub fn remove_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> DropRemoveIfMany<'a, 'q, T, Q>
     where
         T: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
@@ -352,7 +295,7 @@ impl<T> BTreeSet1<T> {
         TakeIfMany::with(self, query, |items, query| items.items.remove(query))
     }
 
-    pub fn take_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> TakeRemoveIfMany<'a, 'q, Self, Q>
+    pub fn take_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> TakeRemoveIfMany<'a, 'q, T, Q>
     where
         T: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
@@ -401,7 +344,7 @@ impl<T> BTreeSet1<T> {
     pub fn difference<'a, R>(&'a self, other: &'a R) -> btree_set::Difference<'a, T>
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         self.items.difference(other.as_btree_set())
     }
@@ -412,7 +355,7 @@ impl<T> BTreeSet1<T> {
     ) -> btree_set::SymmetricDifference<'a, T>
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         self.items.symmetric_difference(other.as_btree_set())
     }
@@ -420,7 +363,7 @@ impl<T> BTreeSet1<T> {
     pub fn intersection<'a, R>(&'a self, other: &'a R) -> btree_set::Intersection<'a, T>
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         self.items.intersection(other.as_btree_set())
     }
@@ -428,7 +371,7 @@ impl<T> BTreeSet1<T> {
     pub fn union<'a, R>(&'a self, other: &'a R) -> Iterator1<btree_set::Union<'a, T>>
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         // SAFETY: `self` is non-empty and `BTreeSet::union` cannot reduce the cardinality of its
         //         inputs.
@@ -443,7 +386,7 @@ impl<T> BTreeSet1<T> {
     pub fn is_disjoint<R>(&self, other: &R) -> bool
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         self.items.is_disjoint(other.as_btree_set())
     }
@@ -451,7 +394,7 @@ impl<T> BTreeSet1<T> {
     pub fn is_subset<R>(&self, other: &R) -> bool
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         self.items.is_subset(other.as_btree_set())
     }
@@ -459,7 +402,7 @@ impl<T> BTreeSet1<T> {
     pub fn is_superset<R>(&self, other: &R) -> bool
     where
         T: Ord,
-        R: ClosedBTreeSet<Item = T>,
+        R: AsBTreeSet<Item = T>,
     {
         self.items.is_superset(other.as_btree_set())
     }
@@ -497,6 +440,54 @@ impl<T> BTreeSet1<T> {
     }
 }
 
+impl<T> BTreeSet1<T> {
+    pub fn except<'a, Q>(
+        &'a mut self,
+        key: &'a Q,
+    ) -> Result<ExceptKeySubset<'a, T, Q>, KeyNotFoundError<&'a Q>>
+    where
+        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
+    {
+        self.contains(key)
+            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
+            .ok_or_else(|| KeyNotFoundError::from_key(key))
+    }
+
+    pub fn only<R>(&mut self, range: R) -> OnlyResult<'_, T>
+    where
+        T: UnsafeOrd,
+        R: IntoRangeBounds<T>,
+    {
+        range::ordered_range_bounds(range)
+            .map_err(|range| {
+                let (start, end) = range.into_bounds();
+                UnorderedError(start, end).into()
+            })
+            .and_then(|range| {
+                if range.contains(self.first()) && range.contains(self.last()) {
+                    let (start, end) = range.into_bounds();
+                    Err(OutOfBoundsError::Range(start, end).into())
+                }
+                else {
+                    let (start, end) = range.into_bounds();
+                    Ok(OnlyRangeSubset::unchecked(
+                        &mut self.items,
+                        Some(ItemRange::unchecked(start, end)),
+                    ))
+                }
+            })
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, TrimRange> {
+        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::TAIL1)
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, TrimRange> {
+        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::RTAIL1)
+    }
+}
+
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 impl<T> BTreeSet1<T>
@@ -526,9 +517,17 @@ where
     }
 }
 
+impl<T> AsBTreeSet for BTreeSet1<T> {
+    type Item = T;
+
+    fn as_btree_set(&self) -> &BTreeSet<Self::Item> {
+        self.as_ref()
+    }
+}
+
 impl<R, T> BitAnd<&'_ R> for &'_ BTreeSet1<T>
 where
-    R: ClosedBTreeSet<Item = T>,
+    R: AsBTreeSet<Item = T>,
     T: Clone + Ord,
 {
     type Output = BTreeSet<T>;
@@ -551,7 +550,7 @@ where
 
 impl<R, T> BitOr<&'_ R> for &'_ BTreeSet1<T>
 where
-    R: ClosedBTreeSet<Item = T>,
+    R: AsBTreeSet<Item = T>,
     T: Clone + Ord,
 {
     type Output = BTreeSet1<T>;
@@ -578,7 +577,7 @@ where
 
 impl<R, T> BitXor<&'_ R> for &'_ BTreeSet1<T>
 where
-    R: ClosedBTreeSet<Item = T>,
+    R: AsBTreeSet<Item = T>,
     T: Clone + Ord,
 {
     type Output = BTreeSet<T>;
@@ -596,71 +595,6 @@ where
 
     fn bitxor(self, rhs: &'_ BTreeSet1<T>) -> Self::Output {
         self ^ rhs.as_btree_set()
-    }
-}
-
-impl<T, Q> ByKey<Q> for BTreeSet1<T>
-where
-    T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-    Q: ?Sized + UnsafeOrd,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a Q,
-    ) -> Result<ExceptKeySubset<'a, Self, Q>, KeyNotFoundError<&'a Q>> {
-        self.contains(key)
-            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<T, R> ByRange<T, R> for BTreeSet1<T>
-where
-    T: UnsafeOrd,
-    R: IntoRangeBounds<T>,
-{
-    type Range = Option<ItemRange<T>>;
-    type Error = RangeError<Bound<T>>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self, Self::Range>, Self::Error> {
-        range::ordered_range_bounds(range)
-            .map_err(|range| {
-                let (start, end) = range.into_bounds();
-                UnorderedError(start, end).into()
-            })
-            .and_then(|range| {
-                if range.contains(self.first()) && range.contains(self.last()) {
-                    let (start, end) = range.into_bounds();
-                    Err(OutOfBoundsError::Range(start, end).into())
-                }
-                else {
-                    let (start, end) = range.into_bounds();
-                    Ok(OnlyRangeSubset::unchecked(
-                        &mut self.items,
-                        Some(ItemRange::unchecked(start, end)),
-                    ))
-                }
-            })
-    }
-}
-
-impl<T> ByTail for BTreeSet1<T> {
-    type Range = TrimRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::TAIL1)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::RTAIL1)
-    }
-}
-
-impl<T> ClosedBTreeSet for BTreeSet1<T> {
-    type Item = T;
-
-    fn as_btree_set(&self) -> &BTreeSet<Self::Item> {
-        self.as_ref()
     }
 }
 
@@ -845,7 +779,7 @@ where
 
 impl<R, T> Sub<&'_ R> for &'_ BTreeSet1<T>
 where
-    R: ClosedBTreeSet<Item = T>,
+    R: AsBTreeSet<Item = T>,
     T: Clone + Ord,
 {
     type Output = BTreeSet<T>;
@@ -864,11 +798,6 @@ where
     fn sub(self, rhs: &'_ BTreeSet1<T>) -> Self::Output {
         self - rhs.as_btree_set()
     }
-}
-
-impl<T> SubsetFor for BTreeSet1<T> {
-    type Kind = Self;
-    type Target = BTreeSet<T>;
 }
 
 impl<T> TryFrom<BTreeSet<T>> for BTreeSet1<T> {
@@ -951,9 +880,7 @@ where
     }
 }
 
-// Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named in `Except::drain` and
-// so prevents returning a complete type.
-struct DrainExcept<'a, T, F>
+struct DrainExceptKeySubset<'a, T, F>
 where
     T: Ord,
     F: FnMut(&T) -> bool,
@@ -961,7 +888,7 @@ where
     input: btree_set::ExtractIf<'a, T, RangeFull, F>,
 }
 
-impl<T, F> Debug for DrainExcept<'_, T, F>
+impl<T, F> Debug for DrainExceptKeySubset<'_, T, F>
 where
     T: Debug + Ord,
     F: FnMut(&T) -> bool,
@@ -974,7 +901,7 @@ where
     }
 }
 
-impl<T, F> Drop for DrainExcept<'_, T, F>
+impl<T, F> Drop for DrainExceptKeySubset<'_, T, F>
 where
     T: Ord,
     F: FnMut(&T) -> bool,
@@ -984,14 +911,14 @@ where
     }
 }
 
-impl<T, F> FusedIterator for DrainExcept<'_, T, F>
+impl<T, F> FusedIterator for DrainExceptKeySubset<'_, T, F>
 where
     T: Ord,
     F: FnMut(&T) -> bool,
 {
 }
 
-impl<T, F> Iterator for DrainExcept<'_, T, F>
+impl<T, F> Iterator for DrainExceptKeySubset<'_, T, F>
 where
     T: Ord,
     F: FnMut(&T) -> bool,
@@ -1003,16 +930,17 @@ where
     }
 }
 
-pub type ExceptKeySubset<'a, K, Q> = subset::ExceptKeySubset<'a, K, BTreeSet<ItemFor<K>>, Q>;
+pub type ExceptKeySubset<'a, T, Q> = subset::ExceptKeySubset<'a, BTreeSet<T>, Q>;
 
-impl<K, T, Q> ExceptKeySubset<'_, K, Q>
+impl<T, Q> ExceptKeySubset<'_, T, Q>
 where
-    K: ClosedBTreeSet<Item = T> + SubsetFor<Target = BTreeSet<T>>,
     T: Borrow<Q> + Ord,
     Q: Ord + ?Sized,
 {
+    // Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named here and so prevents
+    // returning a complete type.
     pub fn drain(&mut self) -> impl '_ + Drop + Iterator<Item = T> {
-        DrainExcept {
+        DrainExceptKeySubset {
             input: self.items.extract_if(.., |item| item.borrow() != self.key),
         }
     }
@@ -1036,34 +964,15 @@ where
     }
 }
 
-pub type OnlyRangeSubset<'a, K, R> = subset::OnlyRangeSubset<'a, K, BTreeSet<ItemFor<K>>, R>;
+pub type OnlyRangeSubset<'a, T, R> = subset::OnlyRangeSubset<'a, BTreeSet<T>, R>;
 
-impl<K, T> OnlyRangeSubset<'_, K, Option<ItemRange<ItemFor<K>>>>
+pub type OnlyResult<'a, T> =
+    Result<OnlyRangeSubset<'a, T, Option<ItemRange<T>>>, RangeError<Bound<T>>>;
+
+impl<T> OnlyRangeSubset<'_, T, Option<ItemRange<T>>>
 where
-    K: ClosedBTreeSet<Item = T> + SubsetFor<Target = BTreeSet<T>>,
     T: Ord,
 {
-    fn remove_isomorph_unchecked<Q>(&mut self, key: &Q) -> bool
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.take_isomorph_unchecked(key).is_some()
-    }
-
-    fn take_isomorph_unchecked<Q>(&mut self, key: &Q) -> Option<T>
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        if self.contains(key) {
-            self.items.take(key)
-        }
-        else {
-            None
-        }
-    }
-
     pub fn retain<F>(&mut self, f: F)
     where
         F: FnMut(&T) -> bool,
@@ -1073,59 +982,24 @@ where
         }
     }
 
-    pub fn insert_in_range(&mut self, item: T) -> Result<bool, T> {
-        if self.range.contains(&item) {
-            Ok(self.items.insert(item))
-        }
-        else {
-            Err(item)
-        }
+    pub fn remove<Q>(&mut self, key: &Q) -> bool
+    where
+        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
+    {
+        self.take(key).is_some()
     }
 
-    pub fn append_in_range(&mut self, other: &mut BTreeSet<T>)
+    pub fn take<Q>(&mut self, key: &Q) -> Option<T>
     where
-        T: Clone,
+        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
     {
-        if let Some(range) = self.range.as_ref() {
-            // To append within the range of the subset, `other` is split into `low`, `middle`, and
-            // `high`. The `middle` set contains any and all items in range, and so it extends the
-            // subset. `low` and `high` are out of bounds of the range, and so these items are not
-            // inserted into the subset and must remain in `other`.
-            //
-            // Note that `low` is just an alias for `other` here, and so it is an exclusive
-            // reference to the input `BTreeSet` (unlike `middle` and `high`).
-            let low = other;
-            let mut middle = match range.start_bound() {
-                Bound::Excluded(start) => {
-                    let mut middle = low.split_off(start);
-                    low.extend(middle.take(start));
-                    middle
-                },
-                Bound::Included(start) => low.split_off(start),
-                Bound::Unbounded => {
-                    if let Some(first) = low.first().cloned() {
-                        // The subset has no lower bound, so all of `low` is split off into `middle`
-                        // (leaving `low` empty).
-                        low.split_off(&first)
-                    }
-                    else {
-                        // If `other` is empty (and so `low.first()` is `None`), then the middle
-                        // items are also empty.
-                        BTreeSet::new()
-                    }
-                },
-            };
-            let high = match range.end_bound() {
-                Bound::Excluded(end) => middle.split_off(end),
-                Bound::Included(end) => {
-                    let mut high = middle.split_off(end);
-                    middle.extend(high.take(end));
-                    high
-                },
-                Bound::Unbounded => BTreeSet::new(),
-            };
-            self.items.extend(middle);
-            low.extend(high);
+        if self.contains(key) {
+            self.items.take(key)
+        }
+        else {
+            None
         }
     }
 
@@ -1186,59 +1060,11 @@ where
     }
 }
 
-impl<T> OnlyRangeSubset<'_, BTreeSet<T>, Option<ItemRange<T>>>
+impl<T> OnlyRangeSubset<'_, T, Option<ItemRange<T>>>
 where
-    T: Ord,
-{
-    pub fn remove<Q>(&mut self, key: &Q) -> bool
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-
-    pub fn take<Q>(&mut self, key: &Q) -> Option<T>
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.take_isomorph_unchecked(key)
-    }
-}
-
-impl<T> OnlyRangeSubset<'_, BTreeSet1<T>, Option<ItemRange<T>>>
-where
-    T: Ord,
-{
-    pub fn remove<Q>(&mut self, key: &Q) -> bool
-    where
-        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-        Q: ?Sized + UnsafeOrd,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-
-    pub fn take<Q>(&mut self, key: &Q) -> Option<T>
-    where
-        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-        Q: ?Sized + UnsafeOrd,
-    {
-        self.take_isomorph_unchecked(key)
-    }
-}
-
-impl<K, T> ByTail for OnlyRangeSubset<'_, K, Option<ItemRange<T>>>
-where
-    K: ClosedBTreeSet<Item = T> + SubsetFor<Target = BTreeSet<T>>,
-    // A `T: UnsafeOrd` bound is not needed here, because subsets over an `ItemRange` can only be
-    // constructed for a `BTreeSet1` via `Query`, which has that bound. This means that there is no
-    // need to separate `Tail` implementations for `BTreeSet` and `BTreeSet1`.
     T: Clone + Ord,
 {
-    type Range = Option<ItemRange<T>>;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, K, Self::Range> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, Option<ItemRange<T>>> {
         if let Some(range) = self.range.clone() {
             let (start, end) = range.into_bounds();
             let start = match start {
@@ -1257,7 +1083,7 @@ where
         }
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, K, Self::Range> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, Option<ItemRange<T>>> {
         if let Some(range) = self.range.clone() {
             let (start, end) = range.into_bounds();
             let end = match end {
@@ -1277,39 +1103,17 @@ where
     }
 }
 
-impl<'a, K, T> OnlyRangeSubset<'a, K, TrimRange>
+impl<'a, T> OnlyRangeSubset<'a, T, TrimRange>
 where
-    K: ClosedBTreeSet<Item = T> + SubsetFor<Target = BTreeSet<T>>,
     T: Ord,
 {
-    pub fn by_item(self) -> OnlyRangeSubset<'a, K, Option<ItemRange<T>>>
+    pub fn by_item(self) -> OnlyRangeSubset<'a, T, Option<ItemRange<T>>>
     where
         T: Clone,
     {
         let OnlyRangeSubset { items, range } = self;
         let range = items.resolve_trim_range(range);
         OnlyRangeSubset::unchecked(items, range)
-    }
-
-    fn remove_isomorph_unchecked<Q>(&mut self, key: &Q) -> bool
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.take_isomorph_unchecked(key).is_some()
-    }
-
-    fn take_isomorph_unchecked<Q>(&mut self, key: &Q) -> Option<T>
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        if self.contains(key) {
-            self.items.take(key)
-        }
-        else {
-            None
-        }
     }
 
     pub fn retain<F>(&mut self, mut f: F)
@@ -1326,20 +1130,25 @@ where
         })
     }
 
-    pub fn insert_in_range(&mut self, item: T) -> Result<bool, T>
+    pub fn remove<Q>(&mut self, key: &Q) -> bool
     where
-        T: Clone,
+        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
     {
-        let range: Option<ItemRange<_>> = self.items.resolve_trim_range(self.range);
-        OnlyRangeSubset::<K, _>::unchecked(self.items, range).insert_in_range(item)
+        self.take(key).is_some()
     }
 
-    pub fn append_in_range(&mut self, other: &mut BTreeSet<T>)
+    pub fn take<Q>(&mut self, key: &Q) -> Option<T>
     where
-        T: Clone,
+        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
     {
-        let range: Option<ItemRange<_>> = self.items.resolve_trim_range(self.range);
-        OnlyRangeSubset::<K, _>::unchecked(self.items, range).append_in_range(other)
+        if self.contains(key) {
+            self.items.take(key)
+        }
+        else {
+            None
+        }
     }
 
     pub fn clear(&mut self) {
@@ -1384,59 +1193,15 @@ where
     }
 }
 
-impl<T> OnlyRangeSubset<'_, BTreeSet<T>, TrimRange>
+impl<T> OnlyRangeSubset<'_, T, TrimRange>
 where
     T: Ord,
 {
-    pub fn remove<Q>(&mut self, key: &Q) -> bool
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-
-    pub fn take<Q>(&mut self, key: &Q) -> Option<T>
-    where
-        T: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.take_isomorph_unchecked(key)
-    }
-}
-
-impl<T> OnlyRangeSubset<'_, BTreeSet1<T>, TrimRange>
-where
-    T: Ord,
-{
-    pub fn remove<Q>(&mut self, key: &Q) -> bool
-    where
-        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-        Q: ?Sized + UnsafeOrd,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-
-    pub fn take<Q>(&mut self, key: &Q) -> Option<T>
-    where
-        T: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-        Q: ?Sized + UnsafeOrd,
-    {
-        self.take_isomorph_unchecked(key)
-    }
-}
-
-impl<K, T> ByTail for OnlyRangeSubset<'_, K, TrimRange>
-where
-    K: ClosedBTreeSet<Item = T> + SubsetFor<Target = BTreeSet<T>>,
-{
-    type Range = TrimRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, K, Self::Range> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, TrimRange> {
         self.advance_tail_range()
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, K, Self::Range> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, TrimRange> {
         self.advance_rtail_range()
     }
 }
@@ -1452,11 +1217,6 @@ pub mod harness {
     pub fn xs1(#[default(4)] end: u8) -> BTreeSet1<u8> {
         BTreeSet1::from_iter1(iter1::harness::xs1(end))
     }
-
-    #[fixture]
-    pub fn terminals1(#[default(0)] first: u8, #[default(9)] last: u8) -> BTreeSet1<u8> {
-        BTreeSet1::from_iter1([first, last])
-    }
 }
 
 #[cfg(test)]
@@ -1467,14 +1227,13 @@ mod tests {
     use serde_test::Token;
 
     use crate::btree_set1::BTreeSet1;
-    use crate::btree_set1::harness::{self, terminals1, xs1};
+    use crate::btree_set1::harness::{self, xs1};
     use crate::iter1::FromIterator1;
+    use crate::range1::IntoRangeBounds;
     #[cfg(feature = "schemars")]
     use crate::schemars;
     #[cfg(feature = "serde")]
     use crate::serde::{self, harness::sequence};
-    use crate::subset::range::IntoRangeBounds;
-    use crate::subset::{ByKey, ByRange, ByTail};
 
     // SAFETY: The `FnMut`s constructed in cases (the parameter `f`) must not stash or otherwise
     //         allow access to the parameter beyond the scope of their bodies. (This is difficult
@@ -1516,7 +1275,7 @@ mod tests {
     #[case(2, &[0, 1, 3, 4])]
     #[case(3, &[0, 1, 2, 4])]
     #[case(4, &[0, 1, 2, 3])]
-    fn drain_except_of_btree_set1_then_drained_eq(
+    fn drain_except_key_subset_of_btree_set1_then_drained_eq(
         mut xs1: BTreeSet1<u8>,
         #[case] key: u8,
         #[case] expected: &[u8],
@@ -1531,7 +1290,10 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn clear_except_of_btree_set1_then_btree_set1_eq_key(mut xs1: BTreeSet1<u8>, #[case] key: u8) {
+    fn clear_except_key_subset_of_btree_set1_then_btree_set1_eq_key(
+        mut xs1: BTreeSet1<u8>,
+        #[case] key: u8,
+    ) {
         xs1.except(&key).unwrap().clear();
         assert_eq!(xs1, BTreeSet1::from_one(key));
     }
@@ -1542,7 +1304,7 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn iter_except_of_btree_set1_then_iter_does_not_contain_key(
+    fn iter_except_key_subset_of_btree_set1_then_iter_does_not_contain_key(
         mut xs1: BTreeSet1<u8>,
         #[case] key: u8,
     ) {
@@ -1655,27 +1417,6 @@ mod tests {
         let mut xss = xss.rtail();
         xss.clear();
         assert_eq!(xs1, expected);
-    }
-
-    #[rstest]
-    #[case::absent_in_range(4.., 4, Ok(true))]
-    #[case::absent_in_range(..=4, 4, Ok(true))]
-    #[case::present_in_range(4.., 9, Ok(false))]
-    #[case::out_of_range_lower_bound(4.., 0, Err(0))]
-    #[case::out_of_range_lower_bound(4.., 1, Err(1))]
-    #[case::out_of_range_upper_bound(..5, 5, Err(5))]
-    #[case::out_of_range_upper_bound(3..=5, 6, Err(6))]
-    #[case::out_of_range_upper_bound(..5, 6, Err(6))]
-    fn insert_into_btree_set1_only_range_subset_then_output_eq<R>(
-        #[from(terminals1)] mut xs1: BTreeSet1<u8>,
-        #[case] range: R,
-        #[case] item: u8,
-        #[case] expected: Result<bool, u8>,
-    ) where
-        R: IntoRangeBounds<u8>,
-    {
-        let mut xss = xs1.only(range).unwrap();
-        assert_eq!(xss.insert_in_range(item), expected);
     }
 
     #[cfg(feature = "schemars")]

@@ -27,85 +27,15 @@ use crate::cmp::{UnsafeOrd, UnsafeOrdIsomorph};
 use crate::iter1::{self, Extend1, FromIterator1, IntoIterator1, Iterator1};
 #[cfg(feature = "rayon")]
 use crate::iter1::{FromParallelIterator1, IntoParallelIterator1, ParallelIterator1};
+use crate::range1::IntoRangeBounds;
 use crate::safety::{NonZeroExt as _, OptionExt as _};
 use crate::subset::range::{
-    self, IntoRangeBounds, ItemRange, OptionExt as _, OutOfBoundsError, RangeError,
-    ResolveTrimRange, TrimRange, UnorderedError,
+    self, ItemRange, OptionExt as _, OutOfBoundsError, RangeError, ResolveTrimRange, TrimRange,
+    UnorderedError,
 };
-use crate::subset::{self, ByKey, ByRange, ByTail, KeyNotFoundError, SubsetFor};
+use crate::subset::{self, KeyNotFoundError};
 use crate::take;
 use crate::{Cardinality, EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
-
-type KeyFor<T> = <T as ClosedBTreeMap>::Key;
-type ValueFor<T> = <T as ClosedBTreeMap>::Value;
-type EntryFor<T> = (KeyFor<T>, ValueFor<T>);
-
-pub trait ClosedBTreeMap {
-    type Key;
-    type Value;
-
-    fn as_btree_map(&self) -> &BTreeMap<Self::Key, Self::Value>;
-}
-
-impl<K, V> ClosedBTreeMap for BTreeMap<K, V> {
-    type Key = K;
-    type Value = V;
-
-    fn as_btree_map(&self) -> &BTreeMap<Self::Key, Self::Value> {
-        self
-    }
-}
-
-impl<K, V, Q> ByKey<Q> for BTreeMap<K, V>
-where
-    K: Borrow<Q> + Ord,
-    Q: Ord + ?Sized,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a Q,
-    ) -> Result<ExceptKeySubset<'a, Self, Q>, KeyNotFoundError<&'a Q>> {
-        self.contains_key(key)
-            .then_some(ExceptKeySubset::unchecked(self, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<K, V, R> ByRange<K, R> for BTreeMap<K, V>
-where
-    K: Ord,
-    R: IntoRangeBounds<K>,
-{
-    type Range = Option<ItemRange<K>>;
-    type Error = UnorderedError<Bound<K>>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self, Self::Range>, Self::Error> {
-        range::ordered_range_bounds(range)
-            .map(|range| {
-                let (start, end) = range.into_bounds();
-                OnlyRangeSubset::unchecked(self, Some(ItemRange::unchecked(start, end)))
-            })
-            .map_err(|range| {
-                let (start, end) = range.into_bounds();
-                UnorderedError(start, end)
-            })
-    }
-}
-
-impl<K, V> ByTail for BTreeMap<K, V>
-where
-    K: Clone,
-{
-    type Range = TrimRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(self, TrimRange::TAIL1)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(self, TrimRange::RTAIL1)
-    }
-}
 
 impl<K, V> Extend1<(K, V)> for BTreeMap<K, V>
 where
@@ -152,11 +82,6 @@ where
                 ItemRange::unchecked(start, end)
             })
     }
-}
-
-impl<K, V> SubsetFor for BTreeMap<K, V> {
-    type Kind = Self;
-    type Target = Self;
 }
 
 pub type ManyEntry<'a, K, V> = btree_map::OccupiedEntry<'a, K, V>;
@@ -416,13 +341,11 @@ where
 
 type TakeIfMany<'a, K, V, U, N = ()> = take::TakeIfMany<'a, BTreeMap<K, V>, U, N>;
 
-pub type PopIfMany<'a, T> = TakeIfMany<'a, KeyFor<T>, ValueFor<T>, EntryFor<T>>;
+pub type PopIfMany<'a, K, V> = TakeIfMany<'a, K, V, (K, V)>;
 
-pub type RemoveIfMany<'a, 'q, T, Q> =
-    TakeIfMany<'a, KeyFor<T>, ValueFor<T>, Option<ValueFor<T>>, &'q Q>;
+pub type RemoveIfMany<'a, 'q, K, V, Q> = TakeIfMany<'a, K, V, Option<V>, &'q Q>;
 
-pub type RemoveEntryIfMany<'a, 'q, T, Q> =
-    TakeIfMany<'a, KeyFor<T>, ValueFor<T>, Option<EntryFor<T>>, &'q Q>;
+pub type RemoveEntryIfMany<'a, 'q, K, V, Q> = TakeIfMany<'a, K, V, Option<(K, V)>, &'q Q>;
 
 impl<'a, K, V, U, N> TakeIfMany<'a, K, V, U, N>
 where
@@ -618,7 +541,7 @@ impl<K, V> BTreeMap1<K, V> {
         self.items.insert(key, value)
     }
 
-    pub fn pop_first_if_many(&mut self) -> PopIfMany<'_, Self>
+    pub fn pop_first_if_many(&mut self) -> PopIfMany<'_, K, V>
     where
         K: Ord,
     {
@@ -635,7 +558,7 @@ impl<K, V> BTreeMap1<K, V> {
         PopFirstUntilOnly { items: self }
     }
 
-    pub fn pop_last_if_many(&mut self) -> PopIfMany<'_, Self>
+    pub fn pop_last_if_many(&mut self) -> PopIfMany<'_, K, V>
     where
         K: Ord,
     {
@@ -652,7 +575,7 @@ impl<K, V> BTreeMap1<K, V> {
         PopLastUntilOnly { items: self }
     }
 
-    pub fn remove_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> RemoveIfMany<'a, 'q, Self, Q>
+    pub fn remove_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> RemoveIfMany<'a, 'q, K, V, Q>
     where
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
@@ -663,7 +586,7 @@ impl<K, V> BTreeMap1<K, V> {
     pub fn remove_entry_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> RemoveEntryIfMany<'a, 'q, Self, Q>
+    ) -> RemoveEntryIfMany<'a, 'q, K, V, Q>
     where
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
@@ -806,6 +729,54 @@ impl<K, V> BTreeMap1<K, V> {
     }
 }
 
+impl<K, V> BTreeMap1<K, V> {
+    pub fn except<'a, Q>(
+        &'a mut self,
+        key: &'a Q,
+    ) -> Result<ExceptKeySubset<'a, K, V, Q>, KeyNotFoundError<&'a Q>>
+    where
+        K: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
+    {
+        self.contains_key(key)
+            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
+            .ok_or_else(|| KeyNotFoundError::from_key(key))
+    }
+
+    pub fn only<R>(&mut self, range: R) -> OnlyResult<'_, K, V>
+    where
+        K: UnsafeOrd,
+        R: IntoRangeBounds<K>,
+    {
+        range::ordered_range_bounds(range)
+            .map_err(|range| {
+                let (start, end) = range.into_bounds();
+                UnorderedError(start, end).into()
+            })
+            .and_then(|range| {
+                if range.contains(self.keys1().first()) && range.contains(self.keys1().last()) {
+                    let (start, end) = range.into_bounds();
+                    Err(OutOfBoundsError::Range(start, end).into())
+                }
+                else {
+                    let (start, end) = range.into_bounds();
+                    Ok(OnlyRangeSubset::unchecked(
+                        &mut self.items,
+                        Some(ItemRange::unchecked(start, end)),
+                    ))
+                }
+            })
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, K, V, TrimRange> {
+        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::TAIL1)
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, K, V, TrimRange> {
+        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::RTAIL1)
+    }
+}
+
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 impl<K, V> BTreeMap1<K, V>
@@ -848,75 +819,6 @@ where
 
     fn size_hint(depth: usize) -> (usize, Option<usize>) {
         (<(K, V)>::size_hint(depth).0, None)
-    }
-}
-
-impl<K, V, Q> ByKey<Q> for BTreeMap1<K, V>
-where
-    K: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-    Q: ?Sized + UnsafeOrd,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a Q,
-    ) -> Result<ExceptKeySubset<'a, Self, Q>, KeyNotFoundError<&'a Q>> {
-        self.contains_key(key)
-            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<K, V, R> ByRange<K, R> for BTreeMap1<K, V>
-where
-    K: UnsafeOrd,
-    R: IntoRangeBounds<K>,
-{
-    type Range = Option<ItemRange<K>>;
-    type Error = RangeError<Bound<K>>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self, Self::Range>, Self::Error> {
-        range::ordered_range_bounds(range)
-            .map_err(|range| {
-                let (start, end) = range.into_bounds();
-                UnorderedError(start, end).into()
-            })
-            .and_then(|range| {
-                if range.contains(self.keys1().first()) && range.contains(self.keys1().last()) {
-                    let (start, end) = range.into_bounds();
-                    Err(OutOfBoundsError::Range(start, end).into())
-                }
-                else {
-                    let (start, end) = range.into_bounds();
-                    Ok(OnlyRangeSubset::unchecked(
-                        &mut self.items,
-                        Some(ItemRange::unchecked(start, end)),
-                    ))
-                }
-            })
-    }
-}
-
-impl<K, V> ByTail for BTreeMap1<K, V>
-where
-    K: Clone,
-{
-    type Range = TrimRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::TAIL1)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self, Self::Range> {
-        OnlyRangeSubset::unchecked(&mut self.items, TrimRange::RTAIL1)
-    }
-}
-
-impl<K, V> ClosedBTreeMap for BTreeMap1<K, V> {
-    type Key = K;
-    type Value = V;
-
-    fn as_btree_map(&self) -> &BTreeMap<Self::Key, Self::Value> {
-        self.as_ref()
     }
 }
 
@@ -1149,11 +1051,6 @@ where
     }
 }
 
-impl<K, V> SubsetFor for BTreeMap1<K, V> {
-    type Kind = Self;
-    type Target = BTreeMap<K, V>;
-}
-
 impl<K, V> TryFrom<BTreeMap<K, V>> for BTreeMap1<K, V> {
     type Error = EmptyError<BTreeMap<K, V>>;
 
@@ -1234,9 +1131,7 @@ where
     }
 }
 
-// Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named in `Except::drain` and
-// so prevents returning a complete type.
-struct DrainExcept<'a, K, V, F>
+struct DrainExceptKeySubset<'a, K, V, F>
 where
     K: Ord,
     F: FnMut(&K, &mut V) -> bool,
@@ -1244,7 +1139,7 @@ where
     input: btree_map::ExtractIf<'a, K, V, RangeFull, F>,
 }
 
-impl<K, V, F> Debug for DrainExcept<'_, K, V, F>
+impl<K, V, F> Debug for DrainExceptKeySubset<'_, K, V, F>
 where
     K: Debug + Ord,
     V: Debug,
@@ -1258,7 +1153,7 @@ where
     }
 }
 
-impl<K, V, F> Drop for DrainExcept<'_, K, V, F>
+impl<K, V, F> Drop for DrainExceptKeySubset<'_, K, V, F>
 where
     K: Ord,
     F: FnMut(&K, &mut V) -> bool,
@@ -1268,14 +1163,14 @@ where
     }
 }
 
-impl<K, V, F> FusedIterator for DrainExcept<'_, K, V, F>
+impl<K, V, F> FusedIterator for DrainExceptKeySubset<'_, K, V, F>
 where
     K: Ord,
     F: FnMut(&K, &mut V) -> bool,
 {
 }
 
-impl<K, V, F> Iterator for DrainExcept<'_, K, V, F>
+impl<K, V, F> Iterator for DrainExceptKeySubset<'_, K, V, F>
 where
     K: Ord,
     F: FnMut(&K, &mut V) -> bool,
@@ -1287,17 +1182,17 @@ where
     }
 }
 
-pub type ExceptKeySubset<'a, T, Q> =
-    subset::ExceptKeySubset<'a, T, BTreeMap<KeyFor<T>, ValueFor<T>>, Q>;
+pub type ExceptKeySubset<'a, K, V, Q> = subset::ExceptKeySubset<'a, BTreeMap<K, V>, Q>;
 
-impl<T, K, V, Q> ExceptKeySubset<'_, T, Q>
+impl<K, V, Q> ExceptKeySubset<'_, K, V, Q>
 where
-    T: ClosedBTreeMap<Key = K, Value = V> + SubsetFor<Target = BTreeMap<K, V>>,
     K: Borrow<Q> + Ord,
     Q: Ord + ?Sized,
 {
+    // Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named here and so prevents
+    // returning a complete type.
     pub fn drain(&mut self) -> impl '_ + Drop + Iterator<Item = (K, V)> {
-        DrainExcept {
+        DrainExceptKeySubset {
             input: self.items.extract_if(.., |key, _| key.borrow() != self.key),
         }
     }
@@ -1323,27 +1218,15 @@ where
     }
 }
 
-pub type OnlyRangeSubset<'a, T, R> =
-    subset::OnlyRangeSubset<'a, T, BTreeMap<KeyFor<T>, ValueFor<T>>, R>;
+pub type OnlyRangeSubset<'a, K, V, R> = subset::OnlyRangeSubset<'a, BTreeMap<K, V>, R>;
 
-impl<T, K, V> OnlyRangeSubset<'_, T, Option<ItemRange<K>>>
+pub type OnlyResult<'a, K, V> =
+    Result<OnlyRangeSubset<'a, K, V, Option<ItemRange<K>>>, RangeError<Bound<K>>>;
+
+impl<K, V> OnlyRangeSubset<'_, K, V, Option<ItemRange<K>>>
 where
-    T: ClosedBTreeMap<Key = K, Value = V> + SubsetFor<Target = BTreeMap<K, V>>,
     K: Ord,
 {
-    fn remove_isomorph_unchecked<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        if self.range.contains(key) {
-            self.items.remove(key)
-        }
-        else {
-            None
-        }
-    }
-
     pub fn retain<F>(&mut self, f: F)
     where
         F: FnMut(&K, &mut V) -> bool,
@@ -1353,59 +1236,16 @@ where
         }
     }
 
-    pub fn insert_in_range(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
-        if self.range.contains(&key) {
-            Ok(self.items.insert(key, value))
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
+    {
+        if self.range.contains(key) {
+            self.items.remove(key)
         }
         else {
-            Err((key, value))
-        }
-    }
-
-    pub fn append_in_range(&mut self, other: &mut BTreeMap<K, V>)
-    where
-        K: Clone,
-    {
-        if let Some(range) = self.range.as_ref() {
-            // To append within the range of the subset, `other` is split into `low`, `middle`, and
-            // `high`. The `middle` set contains any and all items in range, and so it extends the
-            // subset. `low` and `high` are out of bounds of the range, and so these items are not
-            // inserted into the subset and must remain in `other`.
-            //
-            // Note that `low` is just an alias for `other` here, and so it is an exclusive
-            // reference to the input `BTreeMap` (unlike `middle` and `high`).
-            let low = other;
-            let mut middle = match range.start_bound() {
-                Bound::Excluded(start) => {
-                    let mut middle = low.split_off(start);
-                    low.extend(middle.remove_entry(start));
-                    middle
-                },
-                Bound::Included(start) => low.split_off(start),
-                Bound::Unbounded => {
-                    if let Some(first) = low.keys().next().cloned() {
-                        // The subset has no lower bound, so all of `low` is split off into `middle`
-                        // (leaving `low` empty).
-                        low.split_off(&first)
-                    }
-                    else {
-                        // If `other` is empty (and so `low.first()` is `None`), then the middle
-                        // items are also empty.
-                        BTreeMap::new()
-                    }
-                },
-            };
-            let high = match range.end_bound() {
-                Bound::Excluded(end) => middle.split_off(end),
-                Bound::Included(end) => {
-                    let mut high = middle.split_off(end);
-                    middle.extend(high.remove_entry(end));
-                    high
-                },
-                Bound::Unbounded => BTreeMap::new(),
-            };
-            self.items.extend(middle);
-            low.extend(high);
+            None
         }
     }
 
@@ -1484,37 +1324,11 @@ where
     }
 }
 
-impl<K, V> OnlyRangeSubset<'_, BTreeMap<K, V>, Option<ItemRange<K>>> {
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q> + Ord,
-        Q: Ord + ?Sized,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-}
-
-impl<K, V> OnlyRangeSubset<'_, BTreeMap1<K, V>, Option<ItemRange<K>>> {
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-        Q: ?Sized + UnsafeOrd,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-}
-
-impl<T, K, V> ByTail for OnlyRangeSubset<'_, T, Option<ItemRange<K>>>
+impl<K, V> OnlyRangeSubset<'_, K, V, Option<ItemRange<K>>>
 where
-    T: ClosedBTreeMap<Key = K, Value = V> + SubsetFor<Target = BTreeMap<K, V>>,
-    // A `K: UnsafeOrd` bound is not needed here, because subsets over an `ItemRange` can only be
-    // constructed for a `BTreeMap1` via `Query`, which has that bound. This means that there is no
-    // need to separate `Tail` implementations for `BTreeMap` and `BTreeMap1`.
     K: Clone + Ord,
 {
-    type Range = Option<ItemRange<K>>;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, T, Self::Range> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, K, V, Option<ItemRange<K>>> {
         if let Some(range) = self.range.clone() {
             let (start, end) = range.into_bounds();
             let start = match start {
@@ -1534,7 +1348,7 @@ where
         }
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, T, Self::Range> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, K, V, Option<ItemRange<K>>> {
         if let Some(range) = self.range.clone() {
             let (start, end) = range.into_bounds();
             let end = match end {
@@ -1555,31 +1369,17 @@ where
     }
 }
 
-impl<'a, T, K, V> OnlyRangeSubset<'a, T, TrimRange>
+impl<'a, K, V> OnlyRangeSubset<'a, K, V, TrimRange>
 where
-    T: ClosedBTreeMap<Key = K, Value = V> + SubsetFor<Target = BTreeMap<K, V>>,
     K: Ord,
 {
-    pub fn by_key(self) -> OnlyRangeSubset<'a, T, Option<ItemRange<K>>>
+    pub fn by_key(self) -> OnlyRangeSubset<'a, K, V, Option<ItemRange<K>>>
     where
         K: Clone,
     {
         let OnlyRangeSubset { items, range } = self;
         let range = items.resolve_trim_range(range);
         OnlyRangeSubset::unchecked(items, range)
-    }
-
-    fn remove_isomorph_unchecked<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        if self.contains_key(key) {
-            self.items.remove(key)
-        }
-        else {
-            None
-        }
     }
 
     pub fn retain<F>(&mut self, mut f: F)
@@ -1596,20 +1396,17 @@ where
         })
     }
 
-    pub fn insert_in_range(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)>
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
     where
-        K: Clone,
+        K: Borrow<Q> + UnsafeOrdIsomorph<Q>,
+        Q: ?Sized + UnsafeOrd,
     {
-        let range: Option<ItemRange<_>> = self.items.resolve_trim_range(self.range);
-        OnlyRangeSubset::<T, _>::unchecked(self.items, range).insert_in_range(key, value)
-    }
-
-    pub fn append_in_range(&mut self, other: &mut BTreeMap<K, V>)
-    where
-        K: Clone,
-    {
-        let range: Option<ItemRange<_>> = self.items.resolve_trim_range(self.range);
-        OnlyRangeSubset::<T, _>::unchecked(self.items, range).append_in_range(other)
+        if self.contains_key(key) {
+            self.items.remove(key)
+        }
+        else {
+            None
+        }
     }
 
     pub fn clear(&mut self) {
@@ -1659,44 +1456,15 @@ where
     }
 }
 
-impl<K, V> OnlyRangeSubset<'_, BTreeMap<K, V>, TrimRange>
+impl<K, V> OnlyRangeSubset<'_, K, V, TrimRange>
 where
-    K: Ord,
-{
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-}
-
-impl<K, V> OnlyRangeSubset<'_, BTreeMap1<K, V>, TrimRange>
-where
-    K: UnsafeOrd,
-{
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q> + UnsafeOrdIsomorph<Q>,
-        Q: ?Sized + UnsafeOrd,
-    {
-        self.remove_isomorph_unchecked(key)
-    }
-}
-
-impl<T, K, V> ByTail for OnlyRangeSubset<'_, T, TrimRange>
-where
-    T: ClosedBTreeMap<Key = K, Value = V> + SubsetFor<Target = BTreeMap<K, V>>,
     K: Clone + Ord,
 {
-    type Range = TrimRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, T, Self::Range> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, K, V, TrimRange> {
         self.advance_tail_range()
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, T, Self::Range> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, K, V, TrimRange> {
         self.advance_rtail_range()
     }
 }
@@ -1714,11 +1482,6 @@ pub mod harness {
     pub fn xs1(#[default(4)] end: u8) -> BTreeMap1<u8, char> {
         BTreeMap1::from_iter1(iter1::harness::xs1(end).map(|x| (x, VALUE)))
     }
-
-    #[fixture]
-    pub fn terminals1(#[default(0)] first: u8, #[default(9)] last: u8) -> BTreeMap1<u8, char> {
-        BTreeMap1::from_iter1([(first, VALUE), (last, VALUE)])
-    }
 }
 
 #[cfg(test)]
@@ -1729,15 +1492,13 @@ mod tests {
     use serde_test::Token;
 
     use crate::btree_map1::BTreeMap1;
-    use crate::btree_map1::harness::{self, VALUE, terminals1, xs1};
+    use crate::btree_map1::harness::{self, VALUE, xs1};
     use crate::harness::KeyValueRef;
     use crate::iter1::FromIterator1;
     #[cfg(feature = "schemars")]
     use crate::schemars;
     #[cfg(feature = "serde")]
     use crate::serde::{self, harness::map};
-    use crate::subset::range::IntoRangeBounds;
-    use crate::subset::{ByKey, ByRange, ByTail};
 
     #[rstest]
     #[case(0, &[(1, VALUE), (2, VALUE), (3, VALUE), (4, VALUE)])]
@@ -1745,7 +1506,7 @@ mod tests {
     #[case(2, &[(0, VALUE), (1, VALUE), (3, VALUE), (4, VALUE)])]
     #[case(3, &[(0, VALUE), (1, VALUE), (2, VALUE), (4, VALUE)])]
     #[case(4, &[(0, VALUE), (1, VALUE), (2, VALUE), (3, VALUE)])]
-    fn drain_except_of_btree_map1_then_drained_eq(
+    fn drain_except_key_subset_of_btree_map1_then_drained_eq(
         mut xs1: BTreeMap1<u8, char>,
         #[case] key: u8,
         #[case] expected: &[(u8, char)],
@@ -1760,7 +1521,7 @@ mod tests {
     #[case((2, VALUE))]
     #[case((3, VALUE))]
     #[case((4, VALUE))]
-    fn clear_except_of_btree_map1_then_btree_map1_eq_key_value(
+    fn clear_except_key_subset_of_btree_map1_then_btree_map1_eq_key_value(
         mut xs1: BTreeMap1<u8, char>,
         #[case] entry: (u8, char),
     ) {
@@ -1775,7 +1536,7 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn iter_except_of_btree_map1_then_iter_does_not_contain_key(
+    fn iter_except_key_subset_of_btree_map1_then_iter_does_not_contain_key(
         mut xs1: BTreeMap1<u8, char>,
         #[case] key: u8,
     ) {
@@ -1842,27 +1603,6 @@ mod tests {
         let mut xss = xss.rtail();
         xss.clear();
         assert_eq!(xs1, expected);
-    }
-
-    #[rstest]
-    #[case::absent_in_range(4.., 4, Ok(None))]
-    #[case::absent_in_range(..=4, 4, Ok(None))]
-    #[case::present_in_range(4.., 9, Ok(Some(VALUE)))]
-    #[case::out_of_range_lower_bound(4.., 0, Err((0, VALUE)))]
-    #[case::out_of_range_lower_bound(4.., 1, Err((1, VALUE)))]
-    #[case::out_of_range_upper_bound(..5, 5, Err((5, VALUE)))]
-    #[case::out_of_range_upper_bound(3..=5, 6, Err((6, VALUE)))]
-    #[case::out_of_range_upper_bound(..5, 6, Err((6, VALUE)))]
-    fn insert_into_btree_map1_only_range_subset_then_output_eq<R>(
-        #[from(terminals1)] mut xs1: BTreeMap1<u8, char>,
-        #[case] range: R,
-        #[case] key: u8,
-        #[case] expected: Result<Option<char>, (u8, char)>,
-    ) where
-        R: IntoRangeBounds<u8>,
-    {
-        let mut xss = xs1.only(range).unwrap();
-        assert_eq!(xss.insert_in_range(key, VALUE), expected);
     }
 
     #[cfg(feature = "schemars")]

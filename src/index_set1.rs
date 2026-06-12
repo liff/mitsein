@@ -35,69 +35,24 @@ use crate::iter1::{self, Extend1, FromIterator1, IntoIterator1, Iterator1};
 #[cfg(feature = "rayon")]
 use crate::iter1::{FromParallelIterator1, IntoParallelIterator1, ParallelIterator1};
 use crate::safety::{self, NonZeroExt as _, OptionExt as _};
-use crate::subset::range::{self, IndexRange, Intersect, Project, RangeError};
-use crate::subset::{self, ByKey, ByRange, ByTail, KeyNotFoundError, SubsetFor};
+use crate::subset::range::{IndexRange, Intersect, Project, RangeError};
+use crate::subset::{self, KeyNotFoundError};
 use crate::take;
 use crate::{EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
 
-type ItemFor<K> = <K as ClosedIndexSet>::Item;
-type StateFor<K> = <K as ClosedIndexSet>::State;
-
-pub trait ClosedIndexSet {
+pub trait AsIndexSet {
     type Item;
     type State;
 
     fn as_index_set(&self) -> &IndexSet<Self::Item, Self::State>;
 }
 
-impl<T, S> ClosedIndexSet for IndexSet<T, S> {
+impl<T, S> AsIndexSet for IndexSet<T, S> {
     type Item = T;
     type State = S;
 
     fn as_index_set(&self) -> &IndexSet<Self::Item, Self::State> {
         self
-    }
-}
-
-impl<T, S, Q> ByKey<Q> for IndexSet<T, S>
-where
-    S: BuildHasher,
-    Q: Equivalent<T> + Hash + ?Sized,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a Q,
-    ) -> Result<ExceptKeySubset<'a, Self, Q>, KeyNotFoundError<&'a Q>> {
-        self.contains(key)
-            .then_some(ExceptKeySubset::unchecked(self, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<T, S, R> ByRange<usize, R> for IndexSet<T, S>
-where
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.len();
-        OnlyRangeSubset::intersected(self, n, range)
-    }
-}
-
-impl<T, S> ByTail for IndexSet<T, S> {
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_tail_range(self, n)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_rtail_range(self, n)
     }
 }
 
@@ -127,22 +82,15 @@ unsafe impl<T, S> MaybeEmpty for IndexSet<T, S> {
     }
 }
 
-impl<T, S> SubsetFor for IndexSet<T, S> {
-    type Kind = Self;
-    type Target = Self;
-}
-
 type TakeIfMany<'a, T, S, U, N = ()> = take::TakeIfMany<'a, IndexSet<T, S>, U, N>;
 
-pub type PopIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, StateFor<K>, ItemFor<K>>;
+pub type PopIfMany<'a, T, S> = TakeIfMany<'a, T, S, T>;
 
-pub type DropRemoveIfMany<'a, 'q, K, Q> = TakeIfMany<'a, ItemFor<K>, StateFor<K>, bool, &'q Q>;
+pub type DropRemoveIfMany<'a, 'q, T, S, Q> = TakeIfMany<'a, T, S, bool, &'q Q>;
 
-pub type TakeRemoveIfMany<'a, K, N = usize> =
-    TakeIfMany<'a, ItemFor<K>, StateFor<K>, Option<ItemFor<K>>, N>;
+pub type TakeRemoveIfMany<'a, T, S, N = usize> = TakeIfMany<'a, T, S, Option<T>, N>;
 
-pub type TakeRemoveFullIfMany<'a, 'q, K, Q> =
-    TakeIfMany<'a, ItemFor<K>, StateFor<K>, Option<(usize, ItemFor<K>)>, &'q Q>;
+pub type TakeRemoveFullIfMany<'a, 'q, T, S, Q> = TakeIfMany<'a, T, S, Option<(usize, T)>, &'q Q>;
 
 impl<'a, T, S, U, N> TakeIfMany<'a, T, S, U, N> {
     pub fn or_get_only(self) -> Result<U, &'a T> {
@@ -376,7 +324,7 @@ impl<T, S> IndexSet1<T, S> {
         self.items.swap_indices(a, b)
     }
 
-    pub fn pop_if_many(&mut self) -> PopIfMany<'_, Self>
+    pub fn pop_if_many(&mut self) -> PopIfMany<'_, T, S>
     where
         T: Eq + Hash,
     {
@@ -386,13 +334,13 @@ impl<T, S> IndexSet1<T, S> {
         })
     }
 
-    pub fn shift_remove_index_if_many(&mut self, index: usize) -> TakeRemoveIfMany<'_, Self> {
+    pub fn shift_remove_index_if_many(&mut self, index: usize) -> TakeRemoveIfMany<'_, T, S> {
         TakeIfMany::with(self, index, |items, index| {
             items.items.shift_remove_index(index)
         })
     }
 
-    pub fn swap_remove_index_if_many(&mut self, index: usize) -> TakeRemoveIfMany<'_, Self> {
+    pub fn swap_remove_index_if_many(&mut self, index: usize) -> TakeRemoveIfMany<'_, T, S> {
         TakeIfMany::with(self, index, |items, index| {
             items.items.swap_remove_index(index)
         })
@@ -497,6 +445,26 @@ impl<T, S> IndexSet1<T, S> {
     }
 }
 
+impl<T, S> IndexSet1<T, S> {
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T, S>, RangeError<usize>>
+    where
+        R: RangeBounds<usize>,
+    {
+        let n = self.items.len();
+        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, S> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_tail_range(&mut self.items, n)
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, S> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_rtail_range(&mut self.items, n)
+    }
+}
+
 impl<T, S> IndexSet1<T, S>
 where
     S: BuildHasher,
@@ -512,7 +480,7 @@ where
     pub fn shift_remove_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> DropRemoveIfMany<'a, 'q, Self, Q>
+    ) -> DropRemoveIfMany<'a, 'q, T, S, Q>
     where
         T: Borrow<Q>,
         Q: Equivalent<T> + Hash + ?Sized,
@@ -523,7 +491,7 @@ where
     pub fn swap_remove_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> DropRemoveIfMany<'a, 'q, Self, Q>
+    ) -> DropRemoveIfMany<'a, 'q, T, S, Q>
     where
         T: Borrow<Q>,
         Q: Equivalent<T> + Hash + ?Sized,
@@ -534,7 +502,7 @@ where
     pub fn shift_remove_full_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> TakeRemoveFullIfMany<'a, 'q, Self, Q>
+    ) -> TakeRemoveFullIfMany<'a, 'q, T, S, Q>
     where
         T: Borrow<Q>,
         Q: Equivalent<T> + Hash + ?Sized,
@@ -547,7 +515,7 @@ where
     pub fn swap_remove_full_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> TakeRemoveFullIfMany<'a, 'q, Self, Q>
+    ) -> TakeRemoveFullIfMany<'a, 'q, T, S, Q>
     where
         T: Borrow<Q>,
         Q: Equivalent<T> + Hash + ?Sized,
@@ -560,7 +528,7 @@ where
     pub fn shift_take_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> TakeRemoveIfMany<'a, Self, &'q Q>
+    ) -> TakeRemoveIfMany<'a, T, S, &'q Q>
     where
         T: Borrow<Q>,
         Q: Equivalent<T> + Hash + ?Sized,
@@ -571,7 +539,7 @@ where
     pub fn swap_take_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> TakeRemoveIfMany<'a, Self, &'q Q>
+    ) -> TakeRemoveIfMany<'a, T, S, &'q Q>
     where
         T: Borrow<Q>,
         Q: Equivalent<T> + Hash + ?Sized,
@@ -661,65 +629,82 @@ where
         self.items.replace_full(item)
     }
 
-    pub fn difference<'a, R, SR>(&'a self, other: &'a R) -> index_set::Difference<'a, T, SR>
+    pub fn difference<'a, R>(&'a self, other: &'a R) -> index_set::Difference<'a, T, R::State>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher,
     {
         self.items.difference(other.as_index_set())
     }
 
-    pub fn symmetric_difference<'a, R, SR>(
+    pub fn symmetric_difference<'a, R>(
         &'a self,
         other: &'a R,
-    ) -> index_set::SymmetricDifference<'a, T, S, SR>
+    ) -> index_set::SymmetricDifference<'a, T, S, R::State>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher,
     {
         self.items.symmetric_difference(other.as_index_set())
     }
 
-    pub fn intersection<'a, R, SR>(&'a self, other: &'a R) -> index_set::Intersection<'a, T, SR>
+    pub fn intersection<'a, R>(&'a self, other: &'a R) -> index_set::Intersection<'a, T, R::State>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher,
     {
         self.items.intersection(other.as_index_set())
     }
 
-    pub fn union<'a, R, SR>(&'a self, other: &'a R) -> Iterator1<index_set::Union<'a, T, S>>
+    pub fn union<'a, R>(&'a self, other: &'a R) -> Iterator1<index_set::Union<'a, T, S>>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: 'a + BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: 'a + BuildHasher,
     {
         // SAFETY: `self` is non-empty and `IndexSet::union` cannot reduce the cardinality of its
         //         inputs.
         unsafe { Iterator1::from_iter_unchecked(self.items.union(other.as_index_set())) }
     }
 
-    pub fn is_disjoint<R, SR>(&self, other: &R) -> bool
+    pub fn is_disjoint<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher,
     {
         self.items.is_disjoint(other.as_index_set())
     }
 
-    pub fn is_subset<R, SR>(&self, other: &R) -> bool
+    pub fn is_subset<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher,
     {
         self.items.is_subset(other.as_index_set())
     }
 
-    pub fn is_superset<R, SR>(&self, other: &R) -> bool
+    pub fn is_superset<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher,
     {
         self.items.is_superset(other.as_index_set())
+    }
+}
+
+impl<T, S> IndexSet1<T, S>
+where
+    T: UnsafeHash,
+    S: BuildHasher,
+{
+    // TODO: Support isomorphic keys (differentiate between the item type and query type). See
+    //       `OnlyRangeSubset` and `UnsafeOrdIsomorph`.
+    pub fn except<'a>(
+        &'a mut self,
+        key: &'a T,
+    ) -> Result<ExceptKeySubset<'a, T, S, T>, KeyNotFoundError<&'a T>> {
+        self.contains(key)
+            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
+            .ok_or_else(|| KeyNotFoundError::from_key(key))
     }
 }
 
@@ -742,46 +727,46 @@ where
     T: Eq + Hash + Sync,
     S: BuildHasher + Sync,
 {
-    pub fn par_difference<'a, R, SR>(
+    pub fn par_difference<'a, R>(
         &'a self,
         other: &'a R,
-    ) -> index_set::rayon::ParDifference<'a, T, S, SR>
+    ) -> index_set::rayon::ParDifference<'a, T, S, R::State>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_difference(other.as_index_set())
     }
 
-    pub fn par_symmetric_difference<'a, R, SR>(
+    pub fn par_symmetric_difference<'a, R>(
         &'a self,
         other: &'a R,
-    ) -> index_set::rayon::ParSymmetricDifference<'a, T, S, SR>
+    ) -> index_set::rayon::ParSymmetricDifference<'a, T, S, R::State>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_symmetric_difference(other.as_index_set())
     }
 
-    pub fn par_intersection<'a, R, SR>(
+    pub fn par_intersection<'a, R>(
         &'a self,
         other: &'a R,
-    ) -> index_set::rayon::ParIntersection<'a, T, S, SR>
+    ) -> index_set::rayon::ParIntersection<'a, T, S, R::State>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_intersection(other.as_index_set())
     }
 
-    pub fn par_union<'a, R, SR>(
+    pub fn par_union<'a, R>(
         &'a self,
         other: &'a R,
-    ) -> ParallelIterator1<index_set::rayon::ParUnion<'a, T, S, SR>>
+    ) -> ParallelIterator1<index_set::rayon::ParUnion<'a, T, S, R::State>>
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: 'a + BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: 'a + BuildHasher + Sync,
     {
         // SAFETY: `self` is non-empty and `IndexSet::par_union` cannot reduce the cardinality of
         //         its inputs.
@@ -790,34 +775,34 @@ where
         }
     }
 
-    pub fn par_eq<R, SR>(&self, other: &R) -> bool
+    pub fn par_eq<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_eq(other.as_index_set())
     }
 
-    pub fn par_is_disjoint<R, SR>(&self, other: &R) -> bool
+    pub fn par_is_disjoint<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_is_disjoint(other.as_index_set())
     }
 
-    pub fn par_is_subset<R, SR>(&self, other: &R) -> bool
+    pub fn par_is_subset<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_is_subset(other.as_index_set())
     }
 
-    pub fn par_is_superset<R, SR>(&self, other: &R) -> bool
+    pub fn par_is_superset<R>(&self, other: &R) -> bool
     where
-        R: ClosedIndexSet<Item = T, State = SR>,
-        SR: BuildHasher + Sync,
+        R: AsIndexSet<Item = T>,
+        R::State: BuildHasher + Sync,
     {
         self.items.par_is_superset(other.as_index_set())
     }
@@ -928,9 +913,18 @@ where
     }
 }
 
+impl<T, S> AsIndexSet for IndexSet1<T, S> {
+    type Item = T;
+    type State = S;
+
+    fn as_index_set(&self) -> &IndexSet<Self::Item, Self::State> {
+        self.as_ref()
+    }
+}
+
 impl<R, T, S> BitAnd<&'_ R> for &'_ IndexSet1<T, S>
 where
-    R: ClosedIndexSet<Item = T>,
+    R: AsIndexSet<Item = T>,
     R::State: BuildHasher,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
@@ -957,7 +951,7 @@ where
 
 impl<R, T, S> BitOr<&'_ R> for &'_ IndexSet1<T, S>
 where
-    R: ClosedIndexSet<Item = T>,
+    R: AsIndexSet<Item = T>,
     R::State: BuildHasher,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
@@ -988,7 +982,7 @@ where
 
 impl<R, T, S> BitXor<&'_ R> for &'_ IndexSet1<T, S>
 where
-    R: ClosedIndexSet<Item = T>,
+    R: AsIndexSet<Item = T>,
     R::State: BuildHasher,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
@@ -1010,56 +1004,6 @@ where
 
     fn bitxor(self, rhs: &'_ IndexSet1<T, S1>) -> Self::Output {
         self ^ rhs.as_index_set()
-    }
-}
-
-// TODO: Support isomorphic key types (via an `UnsafeHashIsomorph` trait).
-impl<T, S> ByKey<T> for IndexSet1<T, S>
-where
-    T: UnsafeHash,
-    S: BuildHasher,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a T,
-    ) -> Result<ExceptKeySubset<'a, Self, T>, KeyNotFoundError<&'a T>> {
-        self.contains(key)
-            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<T, S, R> ByRange<usize, R> for IndexSet1<T, S>
-where
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.items.len();
-        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
-    }
-}
-
-impl<T, S> ByTail for IndexSet1<T, S> {
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.tail().rekind()
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.rtail().rekind()
-    }
-}
-
-impl<T, S> ClosedIndexSet for IndexSet1<T, S> {
-    type Item = T;
-    type State = S;
-
-    fn as_index_set(&self) -> &IndexSet<Self::Item, Self::State> {
-        self.as_ref()
     }
 }
 
@@ -1253,7 +1197,7 @@ where
 
 impl<R, T, S> Sub<&'_ R> for &'_ IndexSet1<T, S>
 where
-    R: ClosedIndexSet<Item = T>,
+    R: AsIndexSet<Item = T>,
     R::State: BuildHasher,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
@@ -1276,11 +1220,6 @@ where
     fn sub(self, rhs: &'_ IndexSet1<T, S1>) -> Self::Output {
         self - rhs.as_index_set()
     }
-}
-
-impl<T, S> SubsetFor for IndexSet1<T, S> {
-    type Kind = Self;
-    type Target = IndexSet<T, S>;
 }
 
 impl<T, S> TryFrom<IndexSet<T, S>> for IndexSet1<T, S> {
@@ -1307,16 +1246,14 @@ impl<'a, T, S> TryFrom<&'a mut IndexSet<T, S>> for &'a mut IndexSet1<T, S> {
     }
 }
 
-// Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named in `Except::drain` and
-// so prevents returning a complete type.
-struct DrainExcept<'a, T, F>
+struct DrainExceptKeySubset<'a, T, F>
 where
     F: FnMut(&T) -> bool,
 {
     input: index_set::ExtractIf<'a, T, F>,
 }
 
-impl<T, F> Debug for DrainExcept<'_, T, F>
+impl<T, F> Debug for DrainExceptKeySubset<'_, T, F>
 where
     T: Debug,
     F: FnMut(&T) -> bool,
@@ -1329,7 +1266,7 @@ where
     }
 }
 
-impl<T, F> Drop for DrainExcept<'_, T, F>
+impl<T, F> Drop for DrainExceptKeySubset<'_, T, F>
 where
     F: FnMut(&T) -> bool,
 {
@@ -1338,9 +1275,9 @@ where
     }
 }
 
-impl<T, F> FusedIterator for DrainExcept<'_, T, F> where F: FnMut(&T) -> bool {}
+impl<T, F> FusedIterator for DrainExceptKeySubset<'_, T, F> where F: FnMut(&T) -> bool {}
 
-impl<T, F> Iterator for DrainExcept<'_, T, F>
+impl<T, F> Iterator for DrainExceptKeySubset<'_, T, F>
 where
     F: FnMut(&T) -> bool,
 {
@@ -1351,16 +1288,16 @@ where
     }
 }
 
-pub type ExceptKeySubset<'a, K, Q> =
-    subset::ExceptKeySubset<'a, K, IndexSet<ItemFor<K>, StateFor<K>>, Q>;
+pub type ExceptKeySubset<'a, T, S, Q> = subset::ExceptKeySubset<'a, IndexSet<T, S>, Q>;
 
-impl<K, T, S, Q> ExceptKeySubset<'_, K, Q>
+impl<T, S, Q> ExceptKeySubset<'_, T, S, Q>
 where
-    K: ClosedIndexSet<Item = T, State = S> + SubsetFor<Target = IndexSet<T, S>>,
     Q: Equivalent<T> + Hash + ?Sized,
 {
+    // Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named here and so prevents
+    // returning a complete type.
     pub fn drain(&mut self) -> impl '_ + Drop + Iterator<Item = T> {
-        DrainExcept {
+        DrainExceptKeySubset {
             input: self.items.extract_if(.., |item| !self.key.equivalent(item)),
         }
     }
@@ -1384,16 +1321,12 @@ where
     }
 }
 
-pub type OnlyRangeSubset<'a, K> =
-    subset::OnlyRangeSubset<'a, K, IndexSet<ItemFor<K>, StateFor<K>>, IndexRange>;
+pub type OnlyRangeSubset<'a, T, S> = subset::OnlyRangeSubset<'a, IndexSet<T, S>, IndexRange>;
 
 // TODO: It should be possible to safely implement `swap_drain` for subsets over `IndexSet1`. The
 //       `IndexSet::drain` iterator immediately culls its indices but then defers to `vec::Drain`
 //       for removing buckets. `IndexSet::swap_indices` can be used much like `slice::swap` here.
-impl<K, T, S> OnlyRangeSubset<'_, K>
-where
-    K: ClosedIndexSet<Item = T, State = S> + SubsetFor<Target = IndexSet<T, S>>,
-{
+impl<T, S> OnlyRangeSubset<'_, T, S> {
     pub fn truncate(&mut self, len: usize) {
         if let Some(range) = self.range.truncate_from_end(len) {
             self.items.drain(range);
@@ -1405,30 +1338,6 @@ where
         F: FnMut(&T) -> bool,
     {
         self.items.retain(self.range.retain_from_end(f))
-    }
-
-    pub fn move_index(&mut self, from: usize, to: usize) {
-        let from = self
-            .range
-            .project(from)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        let to = self
-            .range
-            .project(to)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        self.items.move_index(from, to)
-    }
-
-    pub fn swap_indices(&mut self, a: usize, b: usize) {
-        let a = self
-            .range
-            .project(a)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        let b = self
-            .range
-            .project(b)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        self.items.swap_indices(a, b)
     }
 
     pub fn shift_remove_index(&mut self, index: usize) -> Option<T> {
@@ -1458,53 +1367,21 @@ where
     }
 }
 
-impl<K, T, S> OnlyRangeSubset<'_, K>
-where
-    K: ClosedIndexSet<Item = T, State = S> + SubsetFor<Target = IndexSet<T, S>>,
-    T: Eq + Hash,
-    S: BuildHasher,
-{
-    pub fn shift_insert(&mut self, index: usize, item: T) -> bool {
-        let index = self
-            .range
-            .project(index)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        if self.items.shift_insert(index, item) {
-            self.range.put_from_end(1);
-            true
-        }
-        else {
-            false
-        }
-    }
-}
-
-impl<K, T, S, R> ByRange<usize, R> for OnlyRangeSubset<'_, K>
-where
-    IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
-    K: ClosedIndexSet<Item = T, State = S> + SubsetFor<Target = IndexSet<T, S>>,
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, K>, Self::Error> {
+impl<T, S> OnlyRangeSubset<'_, T, S> {
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T, S>, RangeError<usize>>
+    where
+        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
+        R: RangeBounds<usize>,
+    {
         let range = self.range.intersect(self.range.project(range)?)?;
         Ok(OnlyRangeSubset::unchecked(self.items, range))
     }
-}
 
-impl<K, T, S> ByTail for OnlyRangeSubset<'_, K>
-where
-    K: ClosedIndexSet<Item = T, State = S> + SubsetFor<Target = IndexSet<T, S>>,
-{
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, K> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, S> {
         self.project_tail_range()
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, K> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, S> {
         let n = self.len();
         self.project_rtail_range(n)
     }
@@ -1532,7 +1409,6 @@ mod tests {
     use crate::index_set1::harness::xs1;
     #[cfg(feature = "schemars")]
     use crate::schemars;
-    use crate::subset::ByKey;
 
     #[rstest]
     #[case(0, &[1, 2, 3, 4])]
@@ -1540,7 +1416,7 @@ mod tests {
     #[case(2, &[0, 1, 3, 4])]
     #[case(3, &[0, 1, 2, 4])]
     #[case(4, &[0, 1, 2, 3])]
-    fn drain_except_of_index_set1_then_drained_eq(
+    fn drain_except_key_subset_of_index_set1_then_drained_eq(
         mut xs1: IndexSet1<u8>,
         #[case] key: u8,
         #[case] expected: &[u8],
@@ -1555,7 +1431,10 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn clear_except_of_index_set1_then_index_set1_eq_key(mut xs1: IndexSet1<u8>, #[case] key: u8) {
+    fn clear_except_key_subset_of_index_set1_then_index_set1_eq_key(
+        mut xs1: IndexSet1<u8>,
+        #[case] key: u8,
+    ) {
         xs1.except(&key).unwrap().clear();
         assert_eq!(xs1, IndexSet1::<_>::from_one(key));
     }
@@ -1566,7 +1445,7 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn iter_except_of_index_set1_then_iter_does_not_contain_key(
+    fn iter_except_key_subset_of_index_set1_then_iter_does_not_contain_key(
         mut xs1: IndexSet1<u8>,
         #[case] key: u8,
     ) {

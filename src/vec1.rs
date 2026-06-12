@@ -9,7 +9,7 @@ use alloc::vec::{self, Drain, Vec};
 use arbitrary::{Arbitrary, Unstructured};
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Formatter};
-use core::iter::{self, FusedIterator, Skip, Take};
+use core::iter::{FusedIterator, Skip, Take};
 use core::mem;
 use core::num::NonZeroUsize;
 use core::ops::{Deref, DerefMut, Index, IndexMut, RangeBounds};
@@ -30,59 +30,16 @@ use crate::boxed1::{BoxedSlice1, BoxedSlice1Ext as _};
 use crate::iter1::{self, Extend1, FromIterator1, IntoIterator1, Iterator1};
 #[cfg(feature = "rayon")]
 use crate::iter1::{FromParallelIterator1, IntoParallelIterator1, ParallelIterator1};
-use crate::ops1::{Range1, RangeInclusive1};
+use crate::range1::{Range1, RangeInclusive1};
 use crate::safety::{self, NonZeroExt as _, OptionExt as _};
 use crate::slice1::Slice1;
 use crate::str1::Str1;
 use crate::string1::String1;
+use crate::subset;
 use crate::subset::range::{self, IndexRange, Intersect, Project, RangeError};
-use crate::subset::{self, ByRange, ByTail, SubsetFor};
 use crate::take;
 use crate::vec_deque1::VecDeque1;
 use crate::{Cardinality, EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
-
-type ItemFor<K> = <K as ClosedVec>::Item;
-
-pub trait ClosedVec {
-    type Item;
-
-    fn as_vec(&self) -> &Vec<Self::Item>;
-}
-
-impl<T> ClosedVec for Vec<T> {
-    type Item = T;
-
-    fn as_vec(&self) -> &Vec<Self::Item> {
-        self
-    }
-}
-
-impl<T, R> ByRange<usize, R> for Vec<T>
-where
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.len();
-        OnlyRangeSubset::intersected(self, n, range)
-    }
-}
-
-impl<T> ByTail for Vec<T> {
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_tail_range(self, n)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_rtail_range(self, n)
-    }
-}
 
 impl<T> Extend1<T> for Vec<T> {
     fn extend_non_empty<I>(mut self, items: I) -> Vec1<T>
@@ -130,16 +87,11 @@ unsafe impl<T> MaybeEmpty for Vec<T> {
     }
 }
 
-impl<T> SubsetFor for Vec<T> {
-    type Kind = Self;
-    type Target = Self;
-}
-
 type TakeIfMany<'a, T, N = ()> = take::TakeIfMany<'a, Vec<T>, T, N>;
 
-pub type PopIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, ()>;
+pub type PopIfMany<'a, T> = TakeIfMany<'a, T, ()>;
 
-pub type RemoveIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, usize>;
+pub type RemoveIfMany<'a, T> = TakeIfMany<'a, T, usize>;
 
 impl<'a, T, N> TakeIfMany<'a, T, N> {
     pub fn or_get_only(self) -> Result<T, &'a T> {
@@ -329,7 +281,7 @@ impl<T> Vec1<T> {
         self.items.push(item)
     }
 
-    pub fn pop_if_many(&mut self) -> PopIfMany<'_, Self> {
+    pub fn pop_if_many(&mut self) -> PopIfMany<'_, T> {
         // SAFETY: `with` executes this closure only if `self` contains more than one item.
         TakeIfMany::with(self, (), |items, ()| unsafe {
             items.items.pop().unwrap_maybe_unchecked()
@@ -357,11 +309,11 @@ impl<T> Vec1<T> {
         self.items.insert(index, item)
     }
 
-    pub fn remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T> {
         TakeIfMany::with(self, index, |items, index| items.items.remove(index))
     }
 
-    pub fn swap_remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn swap_remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T> {
         TakeIfMany::with(self, index, |items, index| items.items.swap_remove(index))
     }
 
@@ -440,6 +392,26 @@ impl<T> Vec1<T> {
     }
 }
 
+impl<T> Vec1<T> {
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T>, RangeError<usize>>
+    where
+        R: RangeBounds<usize>,
+    {
+        let n = self.items.len();
+        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_tail_range(&mut self.items, n)
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_rtail_range(&mut self.items, n)
+    }
+}
+
 // A bound `[T; N]: Array1` is not necessary here, because `Vec::into_flattened` panics when `N` is
 // zero. See below.
 impl<T, const N: usize> Vec1<[T; N]> {
@@ -510,39 +482,6 @@ impl<T> BorrowMut<[T]> for Vec1<T> {
 impl<T> BorrowMut<Slice1<T>> for Vec1<T> {
     fn borrow_mut(&mut self) -> &mut Slice1<T> {
         self.as_mut_slice1()
-    }
-}
-
-impl<T, R> ByRange<usize, R> for Vec1<T>
-where
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.items.len();
-        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
-    }
-}
-
-impl<T> ByTail for Vec1<T> {
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.tail().rekind()
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.rtail().rekind()
-    }
-}
-
-impl<T> ClosedVec for Vec1<T> {
-    type Item = T;
-
-    fn as_vec(&self) -> &Vec<Self::Item> {
-        self.as_ref()
     }
 }
 
@@ -893,11 +832,6 @@ crate::impl_partial_eq_for_non_empty!([for U in Vec1<U>] => [for T in &mut [T]])
 crate::impl_partial_eq_for_non_empty!([for U in Vec1<U>] == [for T in &Slice1<T>]);
 crate::impl_partial_eq_for_non_empty!([for U in Vec1<U>] == [for T in &mut Slice1<T>]);
 
-impl<T> SubsetFor for Vec1<T> {
-    type Kind = Self;
-    type Target = Vec<T>;
-}
-
 impl<'a, T> TryFrom<&'a [T]> for Vec1<T>
 where
     T: Clone,
@@ -972,7 +906,37 @@ impl Write for Vec1<u8> {
 }
 
 #[derive(Debug)]
-pub struct DrainOnlyRangeSubset<'a, T> {
+struct DrainRange {
+    intersection: IndexRange,
+    before: IndexRange,
+    after: IndexRange,
+}
+
+impl DrainRange {
+    fn project_and_intersect<R>(subset: IndexRange, range: R) -> Result<Self, RangeError<usize>>
+    where
+        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
+        R: RangeBounds<usize>,
+    {
+        let intersection = subset.intersect(subset.project(range)?)?;
+        let before = IndexRange::unchecked(
+            subset.start(),
+            intersection
+                .start()
+                .checked_add(1)
+                .unwrap_or_else(|| range::panic_end_overflow()),
+        );
+        let after = IndexRange::unchecked(subset.start(), subset.end() - intersection.len());
+        Ok(DrainRange {
+            intersection,
+            before,
+            after,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct DrainOnlyRangeSubset<'a, T> {
     drain: Drain<'a, T>,
     range: &'a mut IndexRange,
     after: IndexRange,
@@ -1045,33 +1009,44 @@ impl<T> Iterator for SwapDrainOnlyRangeSubset<'_, T> {
     }
 }
 
-pub type OnlyRangeSubset<'a, K> = subset::OnlyRangeSubset<'a, K, Vec<ItemFor<K>>, IndexRange>;
+pub type OnlyRangeSubset<'a, T> = subset::OnlyRangeSubset<'a, Vec<T>, IndexRange>;
 
-impl<T> OnlyRangeSubset<'_, Vec<T>> {
-    pub fn drain<R>(&mut self, range: R) -> DrainOnlyRangeSubset<'_, T>
-    where
-        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
-        R: RangeBounds<usize>,
-    {
-        let DrainRange {
-            intersection,
-            before,
-            after,
-        } = DrainRange::project_and_intersect(self.range, range).expect("invalid drain range");
-        self.range = before;
-        DrainOnlyRangeSubset {
-            drain: self.items.drain(intersection),
-            range: &mut self.range,
-            after,
+impl<T> OnlyRangeSubset<'_, T> {
+    pub fn split_off(&mut self, at: usize) -> Vec<T> {
+        let at = self
+            .range
+            .project(at)
+            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
+        let range = IndexRange::unchecked(at, self.range.end());
+        let items = self.items.drain(range).collect();
+        self.range = range;
+        items
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        if let Some(range) = self.range.truncate_from_end(len) {
+            self.items.drain(range);
         }
     }
-}
 
-impl<T> OnlyRangeSubset<'_, Vec1<T>> {
-    // This implementation, like `DrainOnlyRangeSubset`, assumes that no items before the start of
-    // the drain range are ever forgotten in the target `Vec`. The `Vec` documentation does not
-    // specify this, but the implementation behaves this way and it is very reasonable behavior that
-    // is very unlikely to change. This API is unsound if this assumption does not hold.
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&T) -> bool,
+    {
+        self.retain_mut(move |item| f(&*item))
+    }
+
+    pub fn retain_mut<F>(&mut self, f: F)
+    where
+        F: FnMut(&mut T) -> bool,
+    {
+        self.items.retain_mut(self.range.retain_mut_from_end(f))
+    }
+
+    // This implementation assumes that no items before the start of the drain range are ever
+    // forgotten in the target `Vec`. The `Vec` documentation does not specify this, but the
+    // implementation behaves this way and it is very reasonable behavior that is very unlikely to
+    // change. This API is unsound if this assumption does not hold.
     pub fn swap_drain<R>(&mut self, range: R) -> SwapDrainOnlyRangeSubset<'_, T>
     where
         IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
@@ -1119,78 +1094,6 @@ impl<T> OnlyRangeSubset<'_, Vec1<T>> {
                 swapped: None,
             }
         }
-    }
-}
-
-impl<K, T> OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    pub fn split_off(&mut self, at: usize) -> Vec<T> {
-        let at = self
-            .range
-            .project(at)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        let range = IndexRange::unchecked(at, self.range.end());
-        let items = self.items.drain(range).collect();
-        self.range = range;
-        items
-    }
-
-    pub fn resize(&mut self, len: usize, fill: T)
-    where
-        T: Clone,
-    {
-        self.resize_with(len, move || fill.clone())
-    }
-
-    pub fn resize_with<F>(&mut self, len: usize, f: F)
-    where
-        F: FnMut() -> T,
-    {
-        let from = self.len();
-        let to = len;
-        if to > from {
-            let n = to - from;
-            self.extend(iter::repeat_with(f).take(n))
-        }
-        else {
-            self.truncate(to)
-        }
-    }
-
-    pub fn truncate(&mut self, len: usize) {
-        if let Some(range) = self.range.truncate_from_end(len) {
-            self.items.drain(range);
-        }
-    }
-
-    pub fn retain<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&T) -> bool,
-    {
-        self.retain_mut(move |item| f(&*item))
-    }
-
-    pub fn retain_mut<F>(&mut self, f: F)
-    where
-        F: FnMut(&mut T) -> bool,
-    {
-        self.items.retain_mut(self.range.retain_mut_from_end(f))
-    }
-
-    pub fn insert(&mut self, index: usize, item: T) {
-        let index = self
-            .range
-            .project(index)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        self.items.insert(index, item);
-        self.range.put_from_end(1);
-    }
-
-    pub fn insert_back(&mut self, item: T) {
-        self.items.insert(self.range.end(), item);
-        self.range.put_from_end(1);
     }
 
     pub fn remove(&mut self, index: usize) -> T {
@@ -1269,76 +1172,50 @@ where
     }
 }
 
-impl<K, T> AsMut<[T]> for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    fn as_mut(&mut self) -> &mut [T] {
-        self.as_mut_slice()
-    }
-}
-
-impl<K, T> AsRef<[T]> for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    fn as_ref(&self) -> &[T] {
-        self.as_slice()
-    }
-}
-
-impl<K, T> Borrow<[T]> for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    fn borrow(&self) -> &[T] {
-        self.as_slice()
-    }
-}
-
-impl<K, T> BorrowMut<[T]> for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    fn borrow_mut(&mut self) -> &mut [T] {
-        self.as_mut_slice()
-    }
-}
-
-impl<K, T, R> ByRange<usize, R> for OnlyRangeSubset<'_, K>
-where
-    IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, K>, Self::Error> {
+impl<T> OnlyRangeSubset<'_, T> {
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T>, RangeError<usize>>
+    where
+        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
+        R: RangeBounds<usize>,
+    {
         self.project_and_intersect(range)
     }
-}
 
-impl<K, T> ByTail for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, K> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T> {
         self.project_tail_range()
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, K> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T> {
         let n = self.len();
         self.project_rtail_range(n)
     }
 }
 
-impl<K, T> Deref for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
+impl<T> AsMut<[T]> for OnlyRangeSubset<'_, T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
+impl<T> AsRef<[T]> for OnlyRangeSubset<'_, T> {
+    fn as_ref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T> Borrow<[T]> for OnlyRangeSubset<'_, T> {
+    fn borrow(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T> BorrowMut<[T]> for OnlyRangeSubset<'_, T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
+impl<T> Deref for OnlyRangeSubset<'_, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -1346,64 +1223,16 @@ where
     }
 }
 
-impl<K, T> DerefMut for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
+impl<T> DerefMut for OnlyRangeSubset<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
 
-impl<K, T> Eq for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-    T: Eq,
-{
-}
+impl<T> Eq for OnlyRangeSubset<'_, T> where T: Eq {}
 
-impl<K, T> Extend<T> for OnlyRangeSubset<'_, K>
+impl<T> Ord for OnlyRangeSubset<'_, T>
 where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-{
-    fn extend<I>(&mut self, items: I)
-    where
-        I: IntoIterator<Item = T>,
-    {
-        let n = self.items.len();
-        // Split off the remainder beyond the subset to avoid spurious inserts and copying. This
-        // comes at the cost of a necessary allocation and bulk copy, which isn't great when
-        // extending from a small number of items with a small remainder.
-        let tail = self.items.split_off(self.range.end());
-        self.items.extend(items);
-        self.items.extend(tail);
-        let n = self.items.len() - n;
-        self.range.put_from_end(n);
-    }
-}
-
-// TODO: At time of writing, this implementation conflicts with the `Extend` implementation above
-//       (E0119). However, `T` does not generalize `&'i T` here, because the associated `Target`
-//       type is the same (`Vec<T>`) in both implementations (and a reference would be added to all
-//       `T`)! This appears to be a limitation rather than a true conflict. See other subset
-//       implementations as well.
-//
-// impl<'i, K, T> Extend<&'i T> for OnlyRangeSubset<'_, K>
-// where
-//     K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-//     T: 'i + Copy,
-// {
-//     fn extend<I>(&mut self, items: I)
-//     where
-//         I: IntoIterator<Item = &'i T>,
-//     {
-//         self.extend(items.into_iter().copied())
-//     }
-// }
-
-impl<K, T> Ord for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
     T: Ord,
 {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -1411,54 +1240,21 @@ where
     }
 }
 
-impl<'a, KT, KU, T, U> PartialEq<OnlyRangeSubset<'a, KU>> for OnlyRangeSubset<'a, KT>
+impl<'a, T, U> PartialEq<OnlyRangeSubset<'a, U>> for OnlyRangeSubset<'a, T>
 where
-    KT: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
-    KU: ClosedVec<Item = U> + SubsetFor<Target = Vec<U>>,
     T: PartialEq<U>,
 {
-    fn eq(&self, other: &OnlyRangeSubset<'a, KU>) -> bool {
+    fn eq(&self, other: &OnlyRangeSubset<'a, U>) -> bool {
         self.as_slice().eq(other.as_slice())
     }
 }
 
-impl<K, T> PartialOrd<Self> for OnlyRangeSubset<'_, K>
+impl<T> PartialOrd<Self> for OnlyRangeSubset<'_, T>
 where
-    K: ClosedVec<Item = T> + SubsetFor<Target = Vec<T>>,
     T: PartialOrd<T>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.as_slice().partial_cmp(other.as_slice())
-    }
-}
-
-#[derive(Debug)]
-struct DrainRange {
-    intersection: IndexRange,
-    before: IndexRange,
-    after: IndexRange,
-}
-
-impl DrainRange {
-    fn project_and_intersect<R>(subset: IndexRange, range: R) -> Result<Self, RangeError<usize>>
-    where
-        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
-        R: RangeBounds<usize>,
-    {
-        let intersection = subset.intersect(subset.project(range)?)?;
-        let before = IndexRange::unchecked(
-            subset.start(),
-            intersection
-                .start()
-                .checked_add(1)
-                .unwrap_or_else(|| range::panic_end_overflow()),
-        );
-        let after = IndexRange::unchecked(subset.start(), subset.end() - intersection.len());
-        Ok(DrainRange {
-            intersection,
-            before,
-            after,
-        })
     }
 }
 
@@ -1511,14 +1307,12 @@ mod tests {
     #[cfg(feature = "serde")]
     use serde_test::Token;
 
-    use crate::iter1::IntoIterator1;
     #[cfg(feature = "schemars")]
     use crate::schemars;
     #[cfg(feature = "serde")]
     use crate::serde::{self, harness::sequence};
     use crate::slice1::{Slice1, slice1};
     use crate::subset::range::{IndexRange, Project, RangeError};
-    use crate::subset::{ByRange, ByTail};
     use crate::vec1::Vec1;
     use crate::vec1::harness::{self, xs1};
 
@@ -1638,31 +1432,6 @@ mod tests {
         let xss = xs1.only(range).unwrap();
         let xs: Vec<_> = xss.iter().copied().collect();
         assert_eq!(xs.as_slice(), expected);
-    }
-
-    #[rstest]
-    #[case::one_into_empty_front(0..0, [42], slice1![42, 0, 1, 2, 3, 4])]
-    #[case::many_into_empty_front(0..0, [42, 88], slice1![42, 88, 0, 1, 2, 3, 4])]
-    #[case::one_into_empty_back(5..5, [42], slice1![0, 1, 2, 3, 4, 42])]
-    #[case::many_into_empty_back(5..5, [42, 88], slice1![0, 1, 2, 3, 4, 42, 88])]
-    #[case::one_into_empty_middle(2..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_empty_middle(2..2, [42, 88], slice1![0, 1, 42, 88, 2, 3, 4])]
-    #[case::one_into_non_empty(0..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_non_empty(0..2, [42, 88], slice1![0, 1, 42, 88, 2, 3, 4])]
-    fn insert_back_into_vec1_only_range_subset_then_vec1_eq<R, T>(
-        mut xs1: Vec1<u8>,
-        #[case] range: R,
-        #[case] items: T,
-        #[case] expected: &Slice1<u8>,
-    ) where
-        R: RangeBounds<usize>,
-        T: IntoIterator1<Item = u8>,
-    {
-        let mut xss = xs1.only(range).unwrap();
-        for item in items {
-            xss.insert_back(item);
-        }
-        assert_eq!(xs1.as_slice1(), expected);
     }
 
     #[rstest]

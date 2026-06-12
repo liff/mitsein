@@ -27,41 +27,23 @@ use crate::iter1::{self, Extend1, FromIterator1, IntoIterator1, Iterator1};
 #[cfg(feature = "rayon")]
 use crate::iter1::{FromParallelIterator1, IntoParallelIterator1, ParallelIterator1};
 use crate::safety::{NonZeroExt as _, OptionExt as _};
-use crate::subset::{self, ByKey, KeyNotFoundError, SubsetFor};
+use crate::subset::{self, KeyNotFoundError};
 use crate::take;
 use crate::{Cardinality, EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
 
-type ItemFor<K> = <K as ClosedHashSet>::Item;
-type StateFor<K> = <K as ClosedHashSet>::State;
-
-pub trait ClosedHashSet {
+pub trait AsHashSet {
     type Item;
     type State;
 
     fn as_hash_set(&self) -> &HashSet<Self::Item, Self::State>;
 }
 
-impl<T, S> ClosedHashSet for HashSet<T, S> {
+impl<T, S> AsHashSet for HashSet<T, S> {
     type Item = T;
     type State = S;
 
     fn as_hash_set(&self) -> &HashSet<Self::Item, Self::State> {
         self
-    }
-}
-
-impl<T, S> ByKey<T> for HashSet<T, S>
-where
-    T: Eq + Hash,
-    S: BuildHasher,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a T,
-    ) -> Result<ExceptKeySubset<'a, Self, T>, KeyNotFoundError<&'a T>> {
-        self.contains(key)
-            .then_some(ExceptKeySubset::unchecked(self, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
     }
 }
 
@@ -96,17 +78,11 @@ unsafe impl<T, S> MaybeEmpty for HashSet<T, S> {
     }
 }
 
-impl<T, S> SubsetFor for HashSet<T, S> {
-    type Kind = Self;
-    type Target = Self;
-}
-
 type TakeIfMany<'a, T, S, U, N = ()> = take::TakeIfMany<'a, HashSet<T, S>, U, N>;
 
-pub type DropRemoveIfMany<'a, 'q, K, Q> = TakeIfMany<'a, ItemFor<K>, StateFor<K>, bool, &'q Q>;
+pub type DropRemoveIfMany<'a, 'q, T, S, Q> = TakeIfMany<'a, T, S, bool, &'q Q>;
 
-pub type TakeRemoveIfMany<'a, 'q, K, Q> =
-    TakeIfMany<'a, ItemFor<K>, StateFor<K>, Option<ItemFor<K>>, &'q Q>;
+pub type TakeRemoveIfMany<'a, 'q, T, S, Q> = TakeIfMany<'a, T, S, Option<T>, &'q Q>;
 
 impl<'a, T, S, U, N> TakeIfMany<'a, T, S, U, N>
 where
@@ -353,7 +329,7 @@ where
     pub fn remove_if_many<'a, 'q, Q>(
         &'a mut self,
         query: &'q Q,
-    ) -> DropRemoveIfMany<'a, 'q, Self, Q>
+    ) -> DropRemoveIfMany<'a, 'q, T, S, Q>
     where
         T: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -361,7 +337,7 @@ where
         TakeIfMany::with(self, query, |items, query| items.items.remove(query))
     }
 
-    pub fn take_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> TakeRemoveIfMany<'a, 'q, Self, Q>
+    pub fn take_if_many<'a, 'q, Q>(&'a mut self, query: &'q Q) -> TakeRemoveIfMany<'a, 'q, T, S, Q>
     where
         T: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -379,7 +355,7 @@ where
 
     pub fn difference<'a, R>(&'a self, other: &'a R) -> hash_set::Difference<'a, T, S>
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         self.items.difference(other.as_hash_set())
     }
@@ -389,21 +365,21 @@ where
         other: &'a R,
     ) -> hash_set::SymmetricDifference<'a, T, S>
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         self.items.symmetric_difference(other.as_hash_set())
     }
 
     pub fn intersection<'a, R>(&'a self, other: &'a R) -> hash_set::Intersection<'a, T, S>
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         self.items.intersection(other.as_hash_set())
     }
 
     pub fn union<'a, R>(&'a self, other: &'a R) -> Iterator1<hash_set::Union<'a, T, S>>
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         // SAFETY: `self` is non-empty and `HashSet::union` cannot reduce the cardinality of its
         //         inputs.
@@ -412,21 +388,21 @@ where
 
     pub fn is_disjoint<R>(&self, other: &R) -> bool
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         self.items.is_disjoint(other.as_hash_set())
     }
 
     pub fn is_subset<R>(&self, other: &R) -> bool
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         self.items.is_subset(other.as_hash_set())
     }
 
     pub fn is_superset<R>(&self, other: &R) -> bool
     where
-        R: ClosedHashSet<Item = T, State = S>,
+        R: AsHashSet<Item = T, State = S>,
     {
         self.items.is_superset(other.as_hash_set())
     }
@@ -437,6 +413,23 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.items.contains(key)
+    }
+}
+
+impl<T, S> HashSet1<T, S>
+where
+    T: UnsafeHash,
+    S: BuildHasher,
+{
+    // TODO: Support isomorphic keys (differentiate between the item type and query type). See
+    //       `OnlyRangeSubset` and `UnsafeOrdIsomorph`.
+    pub fn except<'a>(
+        &'a mut self,
+        key: &'a T,
+    ) -> Result<ExceptKeySubset<'a, T, S>, KeyNotFoundError<&'a T>> {
+        self.contains(key)
+            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
+            .ok_or_else(|| KeyNotFoundError::from_key(key))
     }
 }
 
@@ -489,9 +482,18 @@ where
     }
 }
 
+impl<T, S> AsHashSet for HashSet1<T, S> {
+    type Item = T;
+    type State = S;
+
+    fn as_hash_set(&self) -> &HashSet<Self::Item, Self::State> {
+        self.as_ref()
+    }
+}
+
 impl<R, T, S> BitAnd<&'_ R> for &'_ HashSet1<T, S>
 where
-    R: ClosedHashSet<Item = T, State = S>,
+    R: AsHashSet<Item = T, State = S>,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
 {
@@ -516,7 +518,7 @@ where
 
 impl<R, T, S> BitOr<&'_ R> for &'_ HashSet1<T, S>
 where
-    R: ClosedHashSet<Item = T, State = S>,
+    R: AsHashSet<Item = T, State = S>,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
 {
@@ -545,7 +547,7 @@ where
 
 impl<R, T, S> BitXor<&'_ R> for &'_ HashSet1<T, S>
 where
-    R: ClosedHashSet<Item = T, State = S>,
+    R: AsHashSet<Item = T, State = S>,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
 {
@@ -565,30 +567,6 @@ where
 
     fn bitxor(self, rhs: &'_ HashSet1<T, S>) -> Self::Output {
         self ^ rhs.as_hash_set()
-    }
-}
-
-impl<T, S> ByKey<T> for HashSet1<T, S>
-where
-    T: UnsafeHash,
-    S: BuildHasher,
-{
-    fn except<'a>(
-        &'a mut self,
-        key: &'a T,
-    ) -> Result<ExceptKeySubset<'a, Self, T>, KeyNotFoundError<&'a T>> {
-        self.contains(key)
-            .then_some(ExceptKeySubset::unchecked(&mut self.items, key))
-            .ok_or_else(|| KeyNotFoundError::from_key(key))
-    }
-}
-
-impl<T, S> ClosedHashSet for HashSet1<T, S> {
-    type Item = T;
-    type State = S;
-
-    fn as_hash_set(&self) -> &HashSet<Self::Item, Self::State> {
-        self.as_ref()
     }
 }
 
@@ -776,7 +754,7 @@ where
 
 impl<R, T, S> Sub<&'_ R> for &'_ HashSet1<T, S>
 where
-    R: ClosedHashSet<Item = T, State = S>,
+    R: AsHashSet<Item = T, State = S>,
     T: Clone + Eq + Hash,
     S: BuildHasher + Default,
 {
@@ -797,11 +775,6 @@ where
     fn sub(self, rhs: &'_ HashSet1<T, S>) -> Self::Output {
         self - rhs.as_hash_set()
     }
-}
-
-impl<T, S> SubsetFor for HashSet1<T, S> {
-    type Kind = Self;
-    type Target = HashSet<T, S>;
 }
 
 impl<T, S> TryFrom<HashSet<T, S>> for HashSet1<T, S> {
@@ -828,16 +801,14 @@ impl<'a, T, S> TryFrom<&'a mut HashSet<T, S>> for &'a mut HashSet1<T, S> {
     }
 }
 
-// Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named in `Except::drain` and
-// so prevents returning a complete type.
-struct DrainExcept<'a, T, F>
+struct DrainExceptKeySubset<'a, T, F>
 where
     F: FnMut(&T) -> bool,
 {
     input: hash_set::ExtractIf<'a, T, F>,
 }
 
-impl<T, F> Debug for DrainExcept<'_, T, F>
+impl<T, F> Debug for DrainExceptKeySubset<'_, T, F>
 where
     T: Debug,
     F: FnMut(&T) -> bool,
@@ -850,7 +821,7 @@ where
     }
 }
 
-impl<T, F> Drop for DrainExcept<'_, T, F>
+impl<T, F> Drop for DrainExceptKeySubset<'_, T, F>
 where
     F: FnMut(&T) -> bool,
 {
@@ -859,9 +830,9 @@ where
     }
 }
 
-impl<T, F> FusedIterator for DrainExcept<'_, T, F> where F: FnMut(&T) -> bool {}
+impl<T, F> FusedIterator for DrainExceptKeySubset<'_, T, F> where F: FnMut(&T) -> bool {}
 
-impl<T, F> Iterator for DrainExcept<'_, T, F>
+impl<T, F> Iterator for DrainExceptKeySubset<'_, T, F>
 where
     F: FnMut(&T) -> bool,
 {
@@ -872,17 +843,16 @@ where
     }
 }
 
-pub type ExceptKeySubset<'a, K, Q> =
-    subset::ExceptKeySubset<'a, K, HashSet<ItemFor<K>, StateFor<K>>, Q>;
+pub type ExceptKeySubset<'a, T, S> = subset::ExceptKeySubset<'a, HashSet<T, S>, T>;
 
-// TODO: Support isomorphic keys. See `OnlyRangeSubset` and `UnsafeOrdIsomorph`.
-impl<K, T, S> ExceptKeySubset<'_, K, T>
+impl<T, S> ExceptKeySubset<'_, T, S>
 where
-    K: ClosedHashSet<Item = T, State = S> + SubsetFor<Target = HashSet<T, S>>,
     T: Eq + Hash,
 {
+    // Unfortunately, the type of the `ExtractIf` predicate `F` cannot be named here and so prevents
+    // returning a complete type.
     pub fn drain(&mut self) -> impl '_ + Drop + Iterator<Item = T> {
-        DrainExcept {
+        DrainExceptKeySubset {
             input: self.items.extract_if(|item| item != self.key),
         }
     }
@@ -940,7 +910,6 @@ mod tests {
     use crate::schemars;
     #[cfg(feature = "serde")]
     use crate::serde::{self, harness::sequence};
-    use crate::subset::ByKey;
 
     // SAFETY: The `FnMut`s constructed in cases (the parameter `f`) must not stash or otherwise
     //         allow access to the parameter beyond the scope of their bodies. (This is difficult
@@ -1016,7 +985,7 @@ mod tests {
     #[case(2, &[0, 1, 3, 4])]
     #[case(3, &[0, 1, 2, 4])]
     #[case(4, &[0, 1, 2, 3])]
-    fn drain_except_of_hash_set1_then_sorted_drained_eq(
+    fn drain_except_key_subset_of_hash_set1_then_sorted_drained_eq(
         mut xs1: HashSet1<u8>,
         #[case] key: u8,
         #[case] expected: &[u8],
@@ -1032,7 +1001,10 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn clear_except_of_hash_set1_then_hash_set1_eq_key(mut xs1: HashSet1<u8>, #[case] key: u8) {
+    fn clear_except_key_subset_of_hash_set1_then_hash_set1_eq_key(
+        mut xs1: HashSet1<u8>,
+        #[case] key: u8,
+    ) {
         xs1.except(&key).unwrap().clear();
         assert_eq!(xs1, HashSet1::from_one(key));
     }
@@ -1043,7 +1015,7 @@ mod tests {
     #[case(2)]
     #[case(3)]
     #[case(4)]
-    fn iter_except_of_hash_set1_then_iter_does_not_contain_key(
+    fn iter_except_key_subset_of_hash_set1_then_iter_does_not_contain_key(
         mut xs1: HashSet1<u8>,
         #[case] key: u8,
     ) {

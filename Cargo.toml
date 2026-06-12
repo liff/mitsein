@@ -5,7 +5,7 @@ description = "Strongly typed APIs for non-empty collections, slices, and iterat
 repository = "https://github.com/olson-sean-k/mitsein"
 readme = "README.md"
 edition = "2024"
-rust-version = "1.91.0"
+rust-version = "1.96.0"
 license = "MIT"
 keywords = [
     "collection",
@@ -95,17 +95,17 @@ std = [
 [dependencies]
 
 [dependencies.arbitrary]
-version = "^1.4.0"
+version = "^1.0.0"
 default-features = false
 optional = true
 
 [dependencies.arrayvec]
-version = "^0.7.0"
+version = "^0.7.2"
 default-features = false
 optional = true
 
 [dependencies.either]
-version = "^1.15.0"
+version = "^1.0.0"
 default-features = false
 optional = true
 
@@ -115,7 +115,7 @@ default-features = false
 optional = true
 
 [dependencies.indexmap]
-version = "^2.12.0"
+version = "^2.10.0"
 default-features = false
 optional = true
 
@@ -135,12 +135,12 @@ default-features = false
 optional = true
 
 [dependencies.serde]
-version = "1.0"
+version = "1.0.0"
 default-features = false
 optional = true
 
 [dependencies.serde_json]
-version = "1.0"
+version = "1.0.0"
 default-features = false
 optional = true
 
@@ -150,7 +150,7 @@ default-features = false
 optional = true
 
 [dependencies.smallvec]
-version = "^1.15.0"
+version = "^1.9.0"
 default-features = false
 features = [
     "const_generics",

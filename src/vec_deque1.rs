@@ -9,7 +9,6 @@ use alloc::vec::Vec;
 use arbitrary::{Arbitrary, Unstructured};
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Formatter};
-use core::iter;
 use core::mem;
 use core::num::NonZeroUsize;
 use core::ops::{Index, IndexMut, RangeBounds};
@@ -31,54 +30,11 @@ use crate::iter1::{self, Extend1, FromIterator1, IntoIterator1, Iterator1};
 use crate::iter1::{FromParallelIterator1, IntoParallelIterator1, ParallelIterator1};
 use crate::safety::{NonZeroExt as _, OptionExt as _};
 use crate::slice1::Slice1;
+use crate::subset;
 use crate::subset::range::{self, IndexRange, Project, RangeError};
-use crate::subset::{self, ByRange, ByTail, SubsetFor};
 use crate::take;
 use crate::vec1::Vec1;
 use crate::{Cardinality, EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
-
-type ItemFor<K> = <K as ClosedVecDeque>::Item;
-
-pub trait ClosedVecDeque {
-    type Item;
-
-    fn as_vec_deque(&self) -> &VecDeque<Self::Item>;
-}
-
-impl<T> ClosedVecDeque for VecDeque<T> {
-    type Item = T;
-
-    fn as_vec_deque(&self) -> &VecDeque<Self::Item> {
-        self
-    }
-}
-
-impl<T, R> ByRange<usize, R> for VecDeque<T>
-where
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.len();
-        OnlyRangeSubset::intersected(self, n, range)
-    }
-}
-
-impl<T> ByTail for VecDeque<T> {
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_tail_range(self, n)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_rtail_range(self, n)
-    }
-}
 
 impl<T> Extend1<T> for VecDeque<T> {
     fn extend_non_empty<I>(mut self, items: I) -> VecDeque1<T>
@@ -102,16 +58,11 @@ unsafe impl<T> MaybeEmpty for VecDeque<T> {
     }
 }
 
-impl<T> SubsetFor for VecDeque<T> {
-    type Kind = Self;
-    type Target = Self;
-}
-
 type TakeIfMany<'a, T, U, N = ()> = take::TakeIfMany<'a, VecDeque<T>, U, N>;
 
-pub type PopIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, ItemFor<K>, ()>;
+pub type PopIfMany<'a, T> = TakeIfMany<'a, T, T, ()>;
 
-pub type RemoveIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, Option<ItemFor<K>>, usize>;
+pub type RemoveIfMany<'a, T> = TakeIfMany<'a, T, Option<T>, usize>;
 
 impl<'a, T, N> TakeIfMany<'a, T, T, N> {
     pub fn or_get_only(self) -> Result<T, &'a T> {
@@ -276,14 +227,14 @@ impl<T> VecDeque1<T> {
         self.items.push_back(item)
     }
 
-    pub fn pop_front_if_many(&mut self) -> PopIfMany<'_, Self> {
+    pub fn pop_front_if_many(&mut self) -> PopIfMany<'_, T> {
         // SAFETY: `with` executes this closure only if `self` contains more than one item.
         TakeIfMany::with(self, (), |items, ()| unsafe {
             items.items.pop_front().unwrap_maybe_unchecked()
         })
     }
 
-    pub fn pop_back_if_many(&mut self) -> PopIfMany<'_, Self> {
+    pub fn pop_back_if_many(&mut self) -> PopIfMany<'_, T> {
         // SAFETY: `with` executes this closure only if `self` contains more than one item.
         TakeIfMany::with(self, (), |items, ()| unsafe {
             items.items.pop_back().unwrap_maybe_unchecked()
@@ -294,17 +245,17 @@ impl<T> VecDeque1<T> {
         self.items.insert(index, item)
     }
 
-    pub fn remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T> {
         TakeIfMany::with(self, index, |items, index| items.items.remove(index))
     }
 
-    pub fn swap_remove_front_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn swap_remove_front_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T> {
         TakeIfMany::with(self, index, |items, index| {
             items.items.swap_remove_front(index)
         })
     }
 
-    pub fn swap_remove_back_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn swap_remove_back_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T> {
         TakeIfMany::with(self, index, |items, index| {
             items.items.swap_remove_back(index)
         })
@@ -383,6 +334,26 @@ impl<T> VecDeque1<T> {
     }
 }
 
+impl<T> VecDeque1<T> {
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T>, RangeError<usize>>
+    where
+        R: RangeBounds<usize>,
+    {
+        let n = self.items.len();
+        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_tail_range(&mut self.items, n)
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_rtail_range(&mut self.items, n)
+    }
+}
+
 #[cfg(feature = "rayon")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rayon")))]
 impl<T> VecDeque1<T> {
@@ -415,39 +386,6 @@ where
 
     fn size_hint(depth: usize) -> (usize, Option<usize>) {
         (T::size_hint(depth).0, None)
-    }
-}
-
-impl<T, R> ByRange<usize, R> for VecDeque1<T>
-where
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.items.len();
-        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
-    }
-}
-
-impl<T> ByTail for VecDeque1<T> {
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.tail().rekind()
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.rtail().rekind()
-    }
-}
-
-impl<T> ClosedVecDeque for VecDeque1<T> {
-    type Item = T;
-
-    fn as_vec_deque(&self) -> &VecDeque<Self::Item> {
-        self.as_ref()
     }
 }
 
@@ -690,11 +628,6 @@ crate::impl_partial_eq_for_non_empty!([for U in &mut [U]] <= [for T in VecDeque1
 crate::impl_partial_eq_for_non_empty!([for U in Vec<U>] <= [for T in VecDeque1<T>]);
 crate::impl_partial_eq_for_non_empty!([for U in Vec1<U>] => [for T in VecDeque<T>]);
 
-impl<T> SubsetFor for VecDeque1<T> {
-    type Kind = Self;
-    type Target = VecDeque<T>;
-}
-
 impl<T> TryFrom<VecDeque<T>> for VecDeque1<T> {
     type Error = EmptyError<VecDeque<T>>;
 
@@ -746,12 +679,9 @@ impl Write for VecDeque1<u8> {
     }
 }
 
-pub type OnlyRangeSubset<'a, K> = subset::OnlyRangeSubset<'a, K, VecDeque<ItemFor<K>>, IndexRange>;
+pub type OnlyRangeSubset<'a, T> = subset::OnlyRangeSubset<'a, VecDeque<T>, IndexRange>;
 
-impl<K, T> OnlyRangeSubset<'_, K>
-where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
-{
+impl<T> OnlyRangeSubset<'_, T> {
     pub fn split_off(&mut self, at: usize) -> VecDeque<T> {
         let at = self
             .range
@@ -761,28 +691,6 @@ where
         let items = self.items.drain(range).collect();
         self.range = range;
         items
-    }
-
-    pub fn resize(&mut self, len: usize, fill: T)
-    where
-        T: Clone,
-    {
-        self.resize_with(len, move || fill.clone())
-    }
-
-    pub fn resize_with<F>(&mut self, len: usize, f: F)
-    where
-        F: FnMut() -> T,
-    {
-        let to = len;
-        let from = self.len();
-        if to > from {
-            let n = to - from;
-            self.extend(iter::repeat_with(f).take(n))
-        }
-        else {
-            self.truncate(to)
-        }
     }
 
     pub fn truncate(&mut self, len: usize) {
@@ -803,25 +711,6 @@ where
         F: FnMut(&mut T) -> bool,
     {
         self.items.retain_mut(self.range.retain_mut_from_end(f))
-    }
-
-    pub fn insert(&mut self, index: usize, item: T) {
-        let index = self
-            .range
-            .project(index)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        self.items.insert(index, item);
-        self.range.put_from_end(1);
-    }
-
-    pub fn insert_front(&mut self, item: T) {
-        self.items.insert(self.range.start(), item);
-        self.range.put_from_end(1);
-    }
-
-    pub fn insert_back(&mut self, item: T) {
-        self.items.insert(self.range.end(), item);
-        self.range.put_from_end(1);
     }
 
     pub fn remove(&mut self, index: usize) -> Option<T> {
@@ -891,66 +780,29 @@ where
     }
 }
 
-impl<K, T, R> ByRange<usize, R> for OnlyRangeSubset<'_, K>
-where
-    IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, K>, Self::Error> {
+impl<T> OnlyRangeSubset<'_, T> {
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T>, RangeError<usize>>
+    where
+        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
+        R: RangeBounds<usize>,
+    {
         self.project_and_intersect(range)
     }
-}
 
-impl<K, T> ByTail for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
-{
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, K> {
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T> {
         self.project_tail_range()
     }
 
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, K> {
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T> {
         let n = self.len();
         self.project_rtail_range(n)
     }
 }
 
-impl<K, T> Eq for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
-    T: Eq,
-{
-}
+impl<T> Eq for OnlyRangeSubset<'_, T> where T: Eq {}
 
-impl<K, T> Extend<T> for OnlyRangeSubset<'_, K>
+impl<T> Ord for OnlyRangeSubset<'_, T>
 where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
-{
-    fn extend<I>(&mut self, items: I)
-    where
-        I: IntoIterator<Item = T>,
-    {
-        let n = self.items.len();
-        // Split off the remainder beyond the range to avoid spurious inserts and copying. This
-        // comes at the cost of a necessary allocation and bulk copy, which isn't great when
-        // extending from a small number of items with a small remainder.
-        let tail = self.items.split_off(self.range.end());
-        self.items.extend(items);
-        self.items.extend(tail);
-        let n = self.items.len() - n;
-        self.range.put_from_end(n);
-    }
-}
-
-impl<K, T> Ord for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
     T: Ord,
 {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -958,9 +810,8 @@ where
     }
 }
 
-impl<K, T> PartialEq<Self> for OnlyRangeSubset<'_, K>
+impl<T> PartialEq<Self> for OnlyRangeSubset<'_, T>
 where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
     T: PartialEq<T>,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -968,9 +819,8 @@ where
     }
 }
 
-impl<K, T> PartialOrd<Self> for OnlyRangeSubset<'_, K>
+impl<T> PartialOrd<Self> for OnlyRangeSubset<'_, T>
 where
-    K: ClosedVecDeque<Item = T> + SubsetFor<Target = VecDeque<T>>,
     T: PartialOrd<T>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -999,66 +849,16 @@ mod tests {
     #[cfg(feature = "serde")]
     use {alloc::vec::Vec, serde_test::Token};
 
-    use crate::iter1::IntoIterator1;
     #[cfg(feature = "schemars")]
     use crate::schemars;
-    #[cfg(feature = "serde")]
-    use crate::serde::{self, harness::sequence};
     use crate::slice1::{Slice1, slice1};
-    use crate::subset::{ByRange, ByTail};
     use crate::vec_deque1::VecDeque1;
     use crate::vec_deque1::harness;
-    use crate::vec_deque1::harness::xs1;
-
-    #[rstest]
-    #[case::one_into_empty_front(0..0, [42], slice1![42, 0, 1, 2, 3, 4])]
-    #[case::many_into_empty_front(0..0, [42, 88], slice1![88, 42, 0, 1, 2, 3, 4])]
-    #[case::one_into_empty_back(5..5, [42], slice1![0, 1, 2, 3, 4, 42])]
-    #[case::many_into_empty_back(5..5, [42, 88], slice1![0, 1, 2, 3, 4, 88, 42])]
-    #[case::one_into_empty_middle(2..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_empty_middle(2..2, [42, 88], slice1![0, 1, 88, 42, 2, 3, 4])]
-    #[case::one_into_non_empty(1..2, [42], slice1![0, 42, 1, 2, 3, 4])]
-    #[case::many_into_non_empty(1..2, [42, 88], slice1![0, 88, 42, 1, 2, 3, 4])]
-    fn insert_front_into_vec_deque1_only_range_subset_then_vec_deque1_eq<R, T>(
-        mut xs1: VecDeque1<u8>,
-        #[case] range: R,
-        #[case] items: T,
-        #[case] expected: &Slice1<u8>,
-    ) where
-        R: RangeBounds<usize>,
-        T: IntoIterator1<Item = u8>,
-    {
-        let mut xss = xs1.only(range).unwrap();
-        for item in items {
-            xss.insert_front(item);
-        }
-        assert_eq!(xs1.make_contiguous(), expected);
-    }
-
-    #[rstest]
-    #[case::one_into_empty_front(0..0, [42], slice1![42, 0, 1, 2, 3, 4])]
-    #[case::many_into_empty_front(0..0, [42, 88], slice1![42, 88, 0, 1, 2, 3, 4])]
-    #[case::one_into_empty_back(5..5, [42], slice1![0, 1, 2, 3, 4, 42])]
-    #[case::many_into_empty_back(5..5, [42, 88], slice1![0, 1, 2, 3, 4, 42, 88])]
-    #[case::one_into_empty_middle(2..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_empty_middle(2..2, [42, 88], slice1![0, 1, 42, 88, 2, 3, 4])]
-    #[case::one_into_non_empty(0..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_non_empty(0..2, [42, 88], slice1![0, 1, 42, 88, 2, 3, 4])]
-    fn insert_back_into_vec_deque1_only_range_subset_then_vec_deque1_eq<R, T>(
-        mut xs1: VecDeque1<u8>,
-        #[case] range: R,
-        #[case] items: T,
-        #[case] expected: &Slice1<u8>,
-    ) where
-        R: RangeBounds<usize>,
-        T: IntoIterator1<Item = u8>,
-    {
-        let mut xss = xs1.only(range).unwrap();
-        for item in items {
-            xss.insert_back(item);
-        }
-        assert_eq!(xs1.make_contiguous(), expected);
-    }
+    #[cfg(feature = "serde")]
+    use {
+        crate::serde::{self, harness::sequence},
+        crate::vec_deque1::harness::xs1,
+    };
 
     #[rstest]
     #[case::empty_tail(harness::xs1(0))]

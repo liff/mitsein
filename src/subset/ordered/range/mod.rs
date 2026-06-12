@@ -6,9 +6,8 @@ mod trim;
 
 use core::error::Error;
 use core::fmt::{self, Debug, Display, Formatter};
-use core::ops::{
-    Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
-};
+#[cfg(feature = "alloc")]
+use core::ops::{Bound, RangeBounds};
 
 pub use crate::subset::ordered::range::index::IndexRange;
 #[cfg(feature = "alloc")]
@@ -117,51 +116,6 @@ pub trait Intersect<R>: Sized {
     type Error;
 
     fn intersect(self, range: R) -> Result<Self::Output, Self::Error>;
-}
-
-pub trait IntoRangeBounds<N>: RangeBounds<N> {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>);
-}
-
-impl<N> IntoRangeBounds<N> for Range<N> {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>) {
-        let Range { start, end } = self;
-        (Bound::Included(start), Bound::Excluded(end))
-    }
-}
-
-impl<N> IntoRangeBounds<N> for RangeFrom<N> {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>) {
-        let RangeFrom { start } = self;
-        (Bound::Included(start), Bound::Unbounded)
-    }
-}
-
-impl<N> IntoRangeBounds<N> for RangeFull {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>) {
-        (Bound::Unbounded, Bound::Unbounded)
-    }
-}
-
-impl<N> IntoRangeBounds<N> for RangeInclusive<N> {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>) {
-        let (start, end) = self.into_inner();
-        (Bound::Included(start), Bound::Included(end))
-    }
-}
-
-impl<N> IntoRangeBounds<N> for RangeTo<N> {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>) {
-        let RangeTo { end } = self;
-        (Bound::Unbounded, Bound::Excluded(end))
-    }
-}
-
-impl<N> IntoRangeBounds<N> for RangeToInclusive<N> {
-    fn into_bounds(self) -> (Bound<N>, Bound<N>) {
-        let RangeToInclusive { end } = self;
-        (Bound::Unbounded, Bound::Included(end))
-    }
 }
 
 pub trait Project<T> {

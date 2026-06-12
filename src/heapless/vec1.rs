@@ -16,65 +16,10 @@ use crate::heapless;
 use crate::iter1::{self, FromIterator1, IntoIterator1, Iterator1};
 use crate::safety::{NonZeroExt as _, OptionExt as _};
 use crate::slice1::Slice1;
+use crate::subset;
 use crate::subset::range::{self, IndexRange, Project, RangeError};
-use crate::subset::{self, ByRange, ByTail, SubsetFor};
 use crate::take;
 use crate::{Cardinality, EmptyError, FromMaybeEmpty, MaybeEmpty, NonEmpty};
-
-type ItemFor<K> = <K as ClosedVec>::Item;
-type StorageFor<K> = <K as ClosedVec>::Storage;
-
-// The name `Vec` here is used very generally; this trait operates against `VecInner` and so covers
-// the family of `Vec` types from `heapless`. This module makes `VecInner` types less explicit.
-pub trait ClosedVec {
-    type Item;
-    type Storage: ?Sized + VecStorage<Self::Item>;
-
-    fn as_vec_inner(&self) -> &VecInner<Self::Item, usize, Self::Storage>;
-}
-
-impl<T, S> ClosedVec for VecInner<T, usize, S>
-where
-    S: ?Sized + VecStorage<T>,
-{
-    type Item = T;
-    type Storage = S;
-
-    fn as_vec_inner(&self) -> &VecInner<Self::Item, usize, Self::Storage> {
-        self
-    }
-}
-
-impl<T, S, R> ByRange<usize, R> for VecInner<T, usize, S>
-where
-    S: ?Sized + VecStorage<T>,
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.len();
-        OnlyRangeSubset::intersected(self, n, range)
-    }
-}
-
-impl<T, S> ByTail for VecInner<T, usize, S>
-where
-    S: ?Sized + VecStorage<T>,
-{
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_tail_range(self, n)
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        let n = self.len();
-        OnlyRangeSubset::from_rtail_range(self, n)
-    }
-}
 
 unsafe impl<T, S> MaybeEmpty for VecInner<T, usize, S>
 where
@@ -85,19 +30,11 @@ where
     }
 }
 
-impl<T, S> SubsetFor for VecInner<T, usize, S>
-where
-    S: ?Sized + VecStorage<T>,
-{
-    type Kind = Self;
-    type Target = Self;
-}
-
 type TakeIfMany<'a, T, S, N = ()> = take::TakeIfMany<'a, VecInner<T, usize, S>, T, N>;
 
-pub type PopIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, StorageFor<K>, ()>;
+pub type PopIfMany<'a, T, S> = TakeIfMany<'a, T, S, ()>;
 
-pub type RemoveIfMany<'a, K> = TakeIfMany<'a, ItemFor<K>, StorageFor<K>, usize>;
+pub type RemoveIfMany<'a, T, S> = TakeIfMany<'a, T, S, usize>;
 
 impl<'a, T, S, N> TakeIfMany<'a, T, S, N>
 where
@@ -172,7 +109,7 @@ where
         unsafe { self.items.push_unchecked(item) }
     }
 
-    pub fn pop_if_many(&mut self) -> PopIfMany<'_, Self> {
+    pub fn pop_if_many(&mut self) -> PopIfMany<'_, T, S> {
         // SAFETY: `with` executes this closure only if `self` contains more than one item.
         TakeIfMany::with(self, (), |items, ()| unsafe {
             items.items.pop().unwrap_maybe_unchecked()
@@ -183,11 +120,11 @@ where
         self.items.insert(index, item)
     }
 
-    pub fn remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T, S> {
         TakeIfMany::with(self, index, |items, index| items.items.remove(index))
     }
 
-    pub fn swap_remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, Self> {
+    pub fn swap_remove_if_many(&mut self, index: usize) -> RemoveIfMany<'_, T, S> {
         TakeIfMany::with(self, index, |items, index| items.items.swap_remove(index))
     }
 
@@ -223,6 +160,29 @@ where
 
     pub fn is_full(&self) -> bool {
         self.items.is_full()
+    }
+}
+
+impl<T, S> VecInner1<T, S>
+where
+    S: ?Sized + VecStorage<T>,
+{
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T, S>, RangeError<usize>>
+    where
+        R: RangeBounds<usize>,
+    {
+        let n = self.items.len();
+        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, S> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_tail_range(&mut self.items, n)
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, S> {
+        let n = self.items.len();
+        OnlyRangeSubset::from_rtail_range(&mut self.items, n)
     }
 }
 
@@ -295,47 +255,6 @@ where
 {
     fn borrow_mut(&mut self) -> &mut Slice1<T> {
         self.as_mut_slice1()
-    }
-}
-
-impl<T, S, R> ByRange<usize, R> for VecInner1<T, S>
-where
-    S: ?Sized + VecStorage<T>,
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, Self>, Self::Error> {
-        let n = self.items.len();
-        OnlyRangeSubset::intersected_strict_subset(&mut self.items, n, range)
-    }
-}
-
-impl<T, S> ByTail for VecInner1<T, S>
-where
-    S: ?Sized + VecStorage<T>,
-{
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.tail().rekind()
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, Self> {
-        self.items.rtail().rekind()
-    }
-}
-
-impl<T, S> ClosedVec for VecInner1<T, S>
-where
-    S: ?Sized + VecStorage<T>,
-{
-    type Item = T;
-    type Storage = S;
-
-    fn as_vec_inner(&self) -> &VecInner<Self::Item, usize, Self::Storage> {
-        &self.items
     }
 }
 
@@ -436,14 +355,6 @@ heapless::impl_partial_eq_for_non_empty!([for U in &mut Slice1<U>] == [for T, S 
 //heapless::impl_partial_eq_for_non_empty!([for U, S as VecStorage in VecInner1<U, S>] => [for T in &mut [T]]);
 //heapless::impl_partial_eq_for_non_empty!([for U, S as VecStorage in VecInner1<U, S>] == [for T in &Slice1<T>]);
 //heapless::impl_partial_eq_for_non_empty!([for U, S as VecStorage in VecInner1<U, S>] == [for T in &mut Slice1<T>]);
-
-impl<T, S> SubsetFor for VecInner1<T, S>
-where
-    S: ?Sized + VecStorage<T>,
-{
-    type Kind = Self;
-    type Target = VecInner<T, usize, S>;
-}
 
 pub type Vec1<T, const N: usize> = NonEmpty<Vec<T, N, usize>>;
 
@@ -578,12 +489,10 @@ impl<T> VecView1<T> {
     }
 }
 
-pub type OnlyRangeSubset<'a, K> =
-    subset::OnlyRangeSubset<'a, K, VecInner<ItemFor<K>, usize, StorageFor<K>>, IndexRange>;
+pub type OnlyRangeSubset<'a, T, S> = subset::OnlyRangeSubset<'a, VecInner<T, usize, S>, IndexRange>;
 
-impl<K, T, S> OnlyRangeSubset<'_, K>
+impl<T, S> OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>> + ?Sized,
     S: ?Sized + VecStorage<T>,
 {
     pub fn retain<F>(&mut self, mut f: F)
@@ -598,22 +507,6 @@ where
         F: FnMut(&mut T) -> bool,
     {
         self.items.retain_mut(self.range.retain_mut_from_end(f))
-    }
-
-    pub fn insert(&mut self, index: usize, item: T) -> Result<(), T> {
-        let index = self
-            .range
-            .project(index)
-            .unwrap_or_else(|_| range::panic_index_out_of_bounds());
-        self.items.insert(index, item)?;
-        self.range.put_from_end(1);
-        Ok(())
-    }
-
-    pub fn insert_back(&mut self, item: T) -> Result<(), T> {
-        self.items.insert(self.range.end(), item)?;
-        self.range.put_from_end(1);
-        Ok(())
     }
 
     pub fn remove(&mut self, index: usize) -> T {
@@ -692,9 +585,30 @@ where
     }
 }
 
-impl<K, T, S> AsMut<[T]> for OnlyRangeSubset<'_, K>
+impl<T, S> OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
+    S: ?Sized + VecStorage<T>,
+{
+    pub fn only<R>(&mut self, range: R) -> Result<OnlyRangeSubset<'_, T, S>, RangeError<usize>>
+    where
+        IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
+        R: RangeBounds<usize>,
+    {
+        self.project_and_intersect(range)
+    }
+
+    pub fn tail(&mut self) -> OnlyRangeSubset<'_, T, S> {
+        self.project_tail_range()
+    }
+
+    pub fn rtail(&mut self) -> OnlyRangeSubset<'_, T, S> {
+        let n = self.len();
+        self.project_rtail_range(n)
+    }
+}
+
+impl<T, S> AsMut<[T]> for OnlyRangeSubset<'_, T, S>
+where
     S: ?Sized + VecStorage<T>,
 {
     fn as_mut(&mut self) -> &mut [T] {
@@ -702,9 +616,8 @@ where
     }
 }
 
-impl<K, T, S> AsRef<[T]> for OnlyRangeSubset<'_, K>
+impl<T, S> AsRef<[T]> for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     S: ?Sized + VecStorage<T>,
 {
     fn as_ref(&self) -> &[T] {
@@ -712,9 +625,8 @@ where
     }
 }
 
-impl<K, T, S> Borrow<[T]> for OnlyRangeSubset<'_, K>
+impl<T, S> Borrow<[T]> for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     S: ?Sized + VecStorage<T>,
 {
     fn borrow(&self) -> &[T] {
@@ -722,9 +634,8 @@ where
     }
 }
 
-impl<K, T, S> BorrowMut<[T]> for OnlyRangeSubset<'_, K>
+impl<T, S> BorrowMut<[T]> for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     S: ?Sized + VecStorage<T>,
 {
     fn borrow_mut(&mut self) -> &mut [T] {
@@ -732,41 +643,8 @@ where
     }
 }
 
-impl<K, T, S, R> ByRange<usize, R> for OnlyRangeSubset<'_, K>
+impl<T, S> Deref for OnlyRangeSubset<'_, T, S>
 where
-    IndexRange: Project<R, Output = IndexRange, Error = RangeError<usize>>,
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
-    S: ?Sized + VecStorage<T>,
-    R: RangeBounds<usize>,
-{
-    type Range = IndexRange;
-    type Error = RangeError<usize>;
-
-    fn only(&mut self, range: R) -> Result<OnlyRangeSubset<'_, K>, Self::Error> {
-        self.project_and_intersect(range)
-    }
-}
-
-impl<K, T, S> ByTail for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
-    S: ?Sized + VecStorage<T>,
-{
-    type Range = IndexRange;
-
-    fn tail(&mut self) -> OnlyRangeSubset<'_, K> {
-        self.project_tail_range()
-    }
-
-    fn rtail(&mut self) -> OnlyRangeSubset<'_, K> {
-        let n = self.len();
-        self.project_rtail_range(n)
-    }
-}
-
-impl<K, T, S> Deref for OnlyRangeSubset<'_, K>
-where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     S: ?Sized + VecStorage<T>,
 {
     type Target = [T];
@@ -776,9 +654,8 @@ where
     }
 }
 
-impl<K, T, S> DerefMut for OnlyRangeSubset<'_, K>
+impl<T, S> DerefMut for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     S: ?Sized + VecStorage<T>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -786,17 +663,15 @@ where
     }
 }
 
-impl<K, T, S> Eq for OnlyRangeSubset<'_, K>
+impl<T, S> Eq for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     T: Eq,
     S: ?Sized + VecStorage<T>,
 {
 }
 
-impl<K, T, S> Ord for OnlyRangeSubset<'_, K>
+impl<T, S> Ord for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     T: Ord,
     S: ?Sized + VecStorage<T>,
 {
@@ -805,22 +680,19 @@ where
     }
 }
 
-impl<'a, KT, KU, T, U, ST, SU> PartialEq<OnlyRangeSubset<'a, KU>> for OnlyRangeSubset<'a, KT>
+impl<'a, T, U, ST, SU> PartialEq<OnlyRangeSubset<'a, U, SU>> for OnlyRangeSubset<'a, T, ST>
 where
-    KT: ClosedVec<Item = T, Storage = ST> + SubsetFor<Target = VecInner<T, usize, ST>>,
-    KU: ClosedVec<Item = U, Storage = SU> + SubsetFor<Target = VecInner<U, usize, SU>>,
     T: PartialEq<U>,
     ST: ?Sized + VecStorage<T>,
     SU: ?Sized + VecStorage<U>,
 {
-    fn eq(&self, other: &OnlyRangeSubset<'a, KU>) -> bool {
+    fn eq(&self, other: &OnlyRangeSubset<'a, U, SU>) -> bool {
         self.as_slice().eq(other.as_slice())
     }
 }
 
-impl<K, T, S> PartialOrd<Self> for OnlyRangeSubset<'_, K>
+impl<T, S> PartialOrd<Self> for OnlyRangeSubset<'_, T, S>
 where
-    K: ClosedVec<Item = T, Storage = S> + SubsetFor<Target = VecInner<T, usize, S>>,
     T: PartialOrd<T>,
     S: ?Sized + VecStorage<T>,
 {
@@ -855,11 +727,9 @@ mod tests {
 
     use crate::heapless::vec1::Vec1;
     use crate::heapless::vec1::harness::{self, N, xs1};
-    use crate::iter1::IntoIterator1;
     #[cfg(feature = "serde")]
     use crate::serde::{self, harness::sequence};
     use crate::slice1::{Slice1, slice1};
-    use crate::subset::{ByRange, ByTail};
 
     // SAFETY: The `FnMut`s constructed in cases (the parameter `f`) must not stash or otherwise
     //         allow access to the parameter beyond the scope of their bodies. (This is difficult
@@ -926,31 +796,6 @@ mod tests {
         let xss = xs1.only(range).unwrap();
         let xs: Vec<_, N> = xss.iter().copied().collect();
         assert_eq!(xs.as_slice(), expected);
-    }
-
-    #[rstest]
-    #[case::one_into_empty_front(0..0, [42], slice1![42, 0, 1, 2, 3, 4])]
-    #[case::many_into_empty_front(0..0, [42, 88], slice1![42, 88, 0, 1, 2, 3, 4])]
-    #[case::one_into_empty_back(5..5, [42], slice1![0, 1, 2, 3, 4, 42])]
-    #[case::many_into_empty_back(5..5, [42, 88], slice1![0, 1, 2, 3, 4, 42, 88])]
-    #[case::one_into_empty_middle(2..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_empty_middle(2..2, [42, 88], slice1![0, 1, 42, 88, 2, 3, 4])]
-    #[case::one_into_non_empty(0..2, [42], slice1![0, 1, 42, 2, 3, 4])]
-    #[case::many_into_non_empty(0..2, [42, 88], slice1![0, 1, 42, 88, 2, 3, 4])]
-    fn insert_back_into_vec1_only_range_subset_then_vec1_eq<R, T>(
-        mut xs1: Vec1<u8, N>,
-        #[case] range: R,
-        #[case] items: T,
-        #[case] expected: &Slice1<u8>,
-    ) where
-        R: RangeBounds<usize>,
-        T: IntoIterator1<Item = u8>,
-    {
-        let mut xss = xs1.only(range).unwrap();
-        for item in items {
-            xss.insert_back(item).unwrap();
-        }
-        assert_eq!(xs1.as_slice1(), expected);
     }
 
     #[rstest]
